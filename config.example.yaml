@@ -1,0 +1,12 @@
+wallets:
+  - DEMO_WALLET
+country: AU
+tz: Australia/Melbourne
+method: FIFO
+price_source: auto
+fx_source: rba
+airdrop_cost: zero
+treat_liquidity_as_disposal: false
+api_keys:
+  helius: YOUR_KEY
+  birdeye: YOUR_KEY

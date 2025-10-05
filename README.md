@@ -8,7 +8,6 @@ CSV/Parquet reports as well as pretty console summaries.
 
 ## Quick start
 
-
 If you're new to Python tooling, follow these steps exactly.
 
 1. **Install prerequisites**
@@ -37,7 +36,7 @@ If you're new to Python tooling, follow these steps exactly.
    cp .env.example .env
    ```
 
-   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) and [Birdeye](https://birdeye.so/) API keys. These are required for fetching transactions and price data.
+   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (this one is required). If you also add a [Birdeye](https://birdeye.so/) key the tool can source token prices directly from Birdeye. Don't have a Birdeye key? No problem—the app will fall back to on-chain swap prices and CoinGecko where available, you just get better coverage and fewer "missing price" warnings when a Birdeye key is present.
 
 5. **(Optional) Create a config file**
 
@@ -71,7 +70,6 @@ Need a reminder of the available options? Use:
 ```bash
 poetry run solcgt --help
 poetry run solcgt report --help
-
 ```
 
 ## Features

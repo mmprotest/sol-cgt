@@ -8,6 +8,7 @@ CSV/Parquet reports as well as pretty console summaries.
 
 ## Quick start
 
+
 If you're new to Python tooling, follow these steps exactly.
 
 1. **Install prerequisites**
@@ -70,6 +71,7 @@ Need a reminder of the available options? Use:
 ```bash
 poetry run solcgt --help
 poetry run solcgt report --help
+
 ```
 
 ## Features

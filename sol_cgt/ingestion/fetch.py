@@ -38,6 +38,15 @@ async def fetch_wallet(
     all_txs: list[dict] = []
     cursor = before_signature
     path = _wallet_cache_path(wallet)
+    logger.info(
+        "Fetching wallet=%s limit=%s max_pages=%s before=%s after=%s append=%s",
+        wallet,
+        limit,
+        max_pages,
+        before_signature,
+        after_signature,
+        append,
+    )
     for page_idx in range(max_pages):
         page = await helius.fetch_txs(
             wallet,
@@ -51,12 +60,21 @@ async def fetch_wallet(
             base_url=base_url,
         )
         if not page:
+            logger.info("No more transactions for wallet=%s after page=%s", wallet, page_idx + 1)
             break
         all_txs.extend(page)
         mode = "a" if append or page_idx > 0 else "w"
         utils.write_jsonl(path, page, mode=mode)
         last_entry = page[-1]
         cursor = last_entry.get("signature") or last_entry.get("id")
+        logger.info(
+            "Fetched wallet=%s page=%s items=%s total=%s cursor=%s",
+            wallet,
+            page_idx + 1,
+            len(page),
+            len(all_txs),
+            cursor,
+        )
         if gte_time is not None:
             timestamp = last_entry.get("timestamp")
             if isinstance(timestamp, int) and timestamp < gte_time:
@@ -65,6 +83,7 @@ async def fetch_wallet(
             break
     else:
         logger.warning("Fetch pagination stopped after max_pages=%s wallet=%s", max_pages, wallet)
+    logger.info("Completed fetch wallet=%s total=%s cache_path=%s", wallet, len(all_txs), path)
     return all_txs
 
 

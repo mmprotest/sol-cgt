@@ -242,6 +242,12 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
     metadata_cache: dict[str, tuple[Optional[str], Optional[int]]] = {}
     decimal_warning_mints: set[str] = set()
 
+    raw_count = len(raw_txs) if isinstance(raw_txs, list) else None
+    if raw_count is not None:
+        LOGGER.info("Normalizing wallet=%s raw_txs=%s", wallet, raw_count)
+    else:
+        LOGGER.info("Normalizing wallet=%s raw_txs=unknown", wallet)
+
     for tx in raw_txs:
         if tx.get("transactionError"):
             continue
@@ -461,4 +467,5 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
         events.extend(tx_events)
 
     events.sort(key=lambda ev: (ev.ts, ev.id))
+    LOGGER.info("Normalized wallet=%s events=%s", wallet, len(events))
     return events

@@ -13,6 +13,10 @@ def test_normalize_helius_enhanced(monkeypatch) -> None:
             return ("TKB", 6)
         return (None, None)
 
+    async def fake_jupiter_metadata(mint: str):
+        return (None, None)
+
+    monkeypatch.setattr(normalize.jupiter, "token_metadata", fake_jupiter_metadata)
     monkeypatch.setattr(normalize.birdeye, "token_metadata", fake_metadata)
 
     raw_tx = {
@@ -79,3 +83,38 @@ def test_normalize_helius_enhanced(monkeypatch) -> None:
     assert transfer_out.base_token is not None
     assert transfer_out.base_token.symbol == "SOL"
     assert transfer_out.base_token.amount == Decimal("1")
+
+
+def test_normalize_uses_jupiter_metadata_when_birdeye_fails(monkeypatch) -> None:
+    async def fake_jupiter_metadata(mint: str):
+        if mint == "TOKENC":
+            return ("TKC", 8)
+        return (None, None)
+
+    async def failing_birdeye_metadata(mint: str):
+        raise RuntimeError("Birdeye failure")
+
+    monkeypatch.setattr(normalize.jupiter, "token_metadata", fake_jupiter_metadata)
+    monkeypatch.setattr(normalize.birdeye, "token_metadata", failing_birdeye_metadata)
+
+    raw_tx = {
+        "signature": "sig2",
+        "timestamp": 1700000001,
+        "fee": 5000,
+        "tokenTransfers": [
+            {
+                "mint": "TOKENC",
+                "tokenAmount": "1.25",
+                "tokenDecimals": None,
+                "tokenSymbol": None,
+                "fromUserAccount": "OTHER",
+                "toUserAccount": "WALLET",
+            }
+        ],
+    }
+
+    events = asyncio.run(normalize.normalize_wallet_events("WALLET", [raw_tx]))
+    transfer_in = next(ev for ev in events if ev.kind == "transfer_in")
+    assert transfer_in.quote_token is not None
+    assert transfer_in.quote_token.symbol == "TKC"
+    assert transfer_in.quote_token.decimals == 8

@@ -28,6 +28,10 @@ def test_end_to_end_pipeline(monkeypatch) -> None:
     async def fake_metadata(mint: str):
         return (mint[:3], 6)
 
+    async def fake_jupiter_metadata(mint: str):
+        return (None, None)
+
+    monkeypatch.setattr(normalize.jupiter, "token_metadata", fake_jupiter_metadata)
     monkeypatch.setattr(normalize.birdeye, "token_metadata", fake_metadata)
 
     wallet1 = "W1"

@@ -45,7 +45,7 @@ If you're new to Python tooling, follow these steps exactly.
    cp .env.example .env
    ```
 
-   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (`HELIUS_API_KEY`, required for `fetch`). If you also add a [Birdeye](https://birdeye.so/) key (`BIRDEYE_API_KEY`) the tool can source token prices directly from Birdeye. Don't have a Birdeye key? No problem — the app uses free price and FX sources by default.
+   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (`HELIUS_API_KEY`, required for `fetch`). If you also add a [Birdeye](https://birdeye.so/) key (`BIRDEYE_API_KEY`) the tool can source token prices and token metadata from Birdeye (metadata endpoint: `/defi/v3/token/meta-data/single`). Don't have a Birdeye key? No problem — the app uses free price and metadata sources by default.
 
 5. **(Optional) Create a config file**
 
@@ -86,7 +86,7 @@ solcgt report --help
 
 - Multi-wallet aggregation with self-transfer reconciliation.
 - Deterministic lot matching using FIFO/LIFO/HIFO/Specific ID.
-- Cached price and FX lookups to avoid repeated API calls (CoinGecko for SOL, Jupiter for tokens, optional Birdeye, FX via frankfurter.app with an RBA fallback).
+- Cached price and FX lookups to avoid repeated API calls (CoinGecko for SOL, Jupiter for tokens, optional Birdeye for price/metadata, FX via frankfurter.app with an RBA fallback).
 - Structured CSV/XLSX exports by default, with Parquet and rich console summaries available via extras.
 
 ## CLI examples

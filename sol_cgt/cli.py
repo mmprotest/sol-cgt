@@ -20,7 +20,8 @@ from .accounting.engine import AccountingEngine
 from .config import load_settings
 from .ingestion import fetch as fetch_mod
 from .ingestion import normalize
-from .pricing import AudPriceProvider
+from .pricing import AudPriceProvider, TimestampPriceProvider
+from .pricing import valuation as valuation_module
 from .reconciliation import transfers
 from .reporting import console as console_report
 from .reporting import formats, summaries, xlsx
@@ -265,22 +266,22 @@ def compute(
     else:
         logger.info("Normalized event breakdown: none")
     matches = transfers.detect_self_transfers(events, wallets)
-    if settings.api_keys.birdeye:
-        price_provider = AudPriceProvider(
-            api_key=settings.api_keys.birdeye,
-            jupiter_api_key=settings.api_keys.jupiter,
-            coingecko_api_key=settings.api_keys.coingecko,
-            fx_source=settings.fx_source,
-        )
-    else:
-        price_provider = AudPriceProvider(
-            jupiter_api_key=settings.api_keys.jupiter,
-            coingecko_api_key=settings.api_keys.coingecko,
-            fx_source=settings.fx_source,
-        )
+    usd_provider = TimestampPriceProvider(api_key=settings.api_keys.birdeye)
+    price_provider = AudPriceProvider(
+        api_key=settings.api_keys.birdeye,
+        fx_source=settings.fx_source,
+        usd_provider=usd_provider,
+    )
     if dry_run:
         typer.echo(f"Loaded {len(events)} normalized events across {len(wallets)} wallet(s)")
         return
+    valuation_warnings = valuation_module.valuate_events(
+        events,
+        valuation_module.ValuationContext(
+            usd_provider=usd_provider,
+            fx_rate=price_provider.fx_rate,
+        ),
+    )
     engine = AccountingEngine(method=settings.method, price_provider=price_provider)
     result = engine.process(
         events,
@@ -291,7 +292,7 @@ def compute(
     disposals = result.disposals
     acquisitions = result.acquisitions
     lot_moves = result.lot_moves
-    warnings = result.warnings
+    warnings = [*valuation_warnings, *result.warnings]
     if fy_period:
         disposals = [d for d in disposals if fy_period.start <= d.ts <= fy_period.end]
         used_lot_ids = {

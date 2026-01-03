@@ -21,7 +21,7 @@ class FakePriceProvider:
         }
         if key in prices:
             return prices[key]
-        raise ValueError(f"missing price for {key}")
+        return None
 
 
 def test_end_to_end_pipeline(tmp_path) -> None:

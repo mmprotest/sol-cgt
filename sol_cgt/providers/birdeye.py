@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import httpx
 from tenacity import RetryError, retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -23,6 +23,10 @@ class PriceLookupError(RuntimeError):
         super().__init__(f"{message} for mint={mint} at {ts.isoformat()}")
         self.mint = mint
         self.ts = ts
+
+
+class ProviderUnavailable(RuntimeError):
+    pass
 
 
 def _cache_path(key: str) -> Path:
@@ -50,6 +54,8 @@ async def _perform_request(
     allow_not_found: bool = False,
 ) -> Optional[dict[str, Any]]:
     response = await client.get(url, params=params, headers=headers)
+    if response.status_code in (401, 403):
+        raise ProviderUnavailable("Birdeye API key missing or unauthorized")
     if response.status_code == 404 and allow_not_found:
         return None
     if response.status_code == 429 or response.status_code >= 500:
@@ -106,10 +112,30 @@ def _extract_price(payload: dict[str, Any]) -> Optional[Decimal]:
     return None
 
 
+def _extract_price_series(payload: dict[str, Any]) -> dict[int, Decimal]:
+    results: dict[int, Decimal] = {}
+    data = payload.get("data") if isinstance(payload, dict) else None
+    items = None
+    if isinstance(data, dict):
+        items = data.get("items") or data.get("prices")
+    elif isinstance(data, list):
+        items = data
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ts_value = item.get("unixTime") or item.get("time") or item.get("timestamp") or item.get("t")
+            price_value = item.get("value") or item.get("price") or item.get("v")
+            if ts_value is None or price_value is None:
+                continue
+            results[int(ts_value)] = Decimal(str(price_value))
+    return results
+
+
 async def historical_price_usd(mint: str, ts: datetime, *, api_key: Optional[str] = None) -> Decimal:
     api_key = api_key or os.getenv("BIRDEYE_API_KEY")
     if not api_key:
-        raise RuntimeError("BIRDEYE_API_KEY is required for price lookups")
+        raise ProviderUnavailable("BIRDEYE_API_KEY is required for price lookups")
     url = f"{API_URL}/defi/historical_price_unix"
     headers = _headers(api_key)
     unix_ts = int(ts.timestamp())
@@ -126,6 +152,41 @@ async def historical_price_usd(mint: str, ts: datetime, *, api_key: Optional[str
         if price is not None:
             return price
     raise PriceLookupError(mint, ts, message=f"No price in response: {last_payload}")
+
+
+async def historical_price_usd_batch(
+    mint: str,
+    unix_times: Sequence[int],
+    *,
+    api_key: Optional[str] = None,
+) -> dict[int, Decimal]:
+    api_key = api_key or os.getenv("BIRDEYE_API_KEY")
+    if not api_key:
+        raise ProviderUnavailable("BIRDEYE_API_KEY is required for price lookups")
+    if not unix_times:
+        return {}
+    url = f"{API_URL}/defi/historical_price_unix"
+    headers = _headers(api_key)
+    joined = ",".join(str(ts) for ts in unix_times)
+    param_variants = [
+        {"address": mint, "timestamps": joined},
+        {"address": mint, "timestamp": joined},
+        {"address": mint, "time": joined},
+        {"address": mint, "unixtime": joined},
+    ]
+    last_payload: Optional[dict[str, Any]] = None
+    for params in param_variants:
+        payload = await _cached_request(url, params, headers)
+        last_payload = payload
+        if not payload:
+            continue
+        series = _extract_price_series(payload)
+        if series:
+            return series
+        price = _extract_price(payload)
+        if price is not None and len(unix_times) == 1:
+            return {unix_times[0]: price}
+    raise PriceLookupError(mint, datetime.utcnow(), message=f"No price series in response: {last_payload}")
 
 
 async def token_metadata(mint: str, *, api_key: Optional[str] = None) -> Tuple[Optional[str], Optional[int]]:

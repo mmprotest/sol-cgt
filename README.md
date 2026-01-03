@@ -13,7 +13,6 @@ If you're new to Python tooling, follow these steps exactly.
 1. **Install prerequisites**
 
    - Install [Python 3.11](https://www.python.org/downloads/).
-   - Install [Poetry](https://python-poetry.org/docs/#installation) (the package manager we use).
 
 2. **Clone the repository**
 
@@ -22,13 +21,21 @@ If you're new to Python tooling, follow these steps exactly.
    cd sol-cgt
    ```
 
-3. **Install the Python dependencies**
+3. **Create a virtual environment and install dependencies**
 
    ```bash
-   poetry install
+   python -m venv .venv
+   . .venv/bin/activate
+   python -m pip install -U pip
+   python -m pip install -r requirements.txt
+   python -m pip install -e .
    ```
 
-   The first time this runs it may take a few minutes while Poetry creates an isolated virtual environment.
+   On Windows PowerShell, activate with:
+
+   ```powershell
+   .\.venv\Scripts\Activate.ps1
+   ```
 
 4. **Provide your API keys (required for fetch, optional for pricing)**
 
@@ -49,7 +56,7 @@ If you're new to Python tooling, follow these steps exactly.
 6. **Fetch raw transactions for your wallet(s)**
 
    ```bash
-   poetry run solcgt fetch -w <YOUR_WALLET_ADDRESS>
+   solcgt fetch -w <YOUR_WALLET_ADDRESS>
    ```
 
    Replace `<YOUR_WALLET_ADDRESS>` with an actual Solana address. The tool pulls transactions via the Helius Enhanced API and caches them in `./cache/raw/` so you only need to refetch when new activity occurs.
@@ -57,7 +64,7 @@ If you're new to Python tooling, follow these steps exactly.
 7. **Generate the capital gains report**
 
    ```bash
-   poetry run solcgt compute \
+   solcgt compute \
      -w <YOUR_WALLET_ADDRESS> \
      --fy "2024-2025" \
      --format both \
@@ -69,8 +76,8 @@ If you're new to Python tooling, follow these steps exactly.
 Need a reminder of the available options? Use:
 
 ```bash
-poetry run solcgt --help
-poetry run solcgt report --help
+solcgt --help
+solcgt report --help
 ```
 
 ## Features
@@ -83,7 +90,7 @@ poetry run solcgt report --help
 ## CLI examples
 
 ```bash
-poetry run solcgt compute \
+solcgt compute \
   --wallet <ADDR1> \
   --wallet <ADDR2> \
   --fy "2024-2025" \
@@ -108,7 +115,8 @@ Config flags:
 Tests can be executed with:
 
 ```bash
-poetry run pytest
+python -m pip install -r requirements-dev.txt
+pytest
 ```
 
 The repository stores normalised transactions and API payloads in `./cache` to

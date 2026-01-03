@@ -4,8 +4,6 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 
-import httpx
-
 from sol_cgt.accounting.engine import AccountingEngine
 from sol_cgt.ingestion import normalize
 from sol_cgt.reconciliation.transfers import detect_self_transfers
@@ -26,15 +24,7 @@ class FakePriceProvider:
         raise ValueError(f"missing price for {key}")
 
 
-def test_end_to_end_pipeline(monkeypatch) -> None:
-    async def fake_metadata(mint: str):
-        return (mint[:3], 6)
-
-    async def fake_jupiter_metadata(mint: str):
-        return (None, None)
-
-    monkeypatch.setattr(normalize.jupiter, "token_metadata", fake_jupiter_metadata)
-    monkeypatch.setattr(normalize.birdeye, "token_metadata", fake_metadata)
+def test_end_to_end_pipeline(tmp_path) -> None:
 
     wallet1 = "W1"
     wallet2 = "W2"
@@ -107,8 +97,9 @@ def test_end_to_end_pipeline(monkeypatch) -> None:
     ]
 
     events = []
-    events.extend(asyncio.run(normalize.normalize_wallet_events(wallet1, raw_txs_w1)))
-    events.extend(asyncio.run(normalize.normalize_wallet_events(wallet2, raw_txs_w2)))
+    cache_path = tmp_path / "mint_meta.json"
+    events.extend(asyncio.run(normalize.normalize_wallet_events(wallet1, raw_txs_w1, mint_cache_path=cache_path)))
+    events.extend(asyncio.run(normalize.normalize_wallet_events(wallet2, raw_txs_w2, mint_cache_path=cache_path)))
 
     matches = detect_self_transfers(events, wallets=[wallet1, wallet2])
     engine = AccountingEngine(price_provider=FakePriceProvider())
@@ -121,15 +112,11 @@ def test_end_to_end_pipeline(monkeypatch) -> None:
     assert disposal.gain_loss_aud == Decimal("6.00")
 
 
-def test_pipeline_metadata_failures_do_not_crash(monkeypatch) -> None:
-    async def failing_jupiter_metadata(mint: str):
-        raise httpx.ConnectError("down", request=httpx.Request("GET", "https://rpc"))
+def test_pipeline_metadata_failures_do_not_crash(monkeypatch, tmp_path) -> None:
+    async def fake_batch(mints: list[str], rpc_url: str):
+        return {mint: None for mint in mints}
 
-    async def failing_birdeye_metadata(mint: str):
-        raise httpx.ConnectError("down", request=httpx.Request("GET", "https://birdeye"))
-
-    monkeypatch.setattr(normalize.jupiter, "token_metadata", failing_jupiter_metadata)
-    monkeypatch.setattr(normalize.birdeye, "token_metadata", failing_birdeye_metadata)
+    monkeypatch.setattr(normalize.solana_rpc, "get_mint_decimals_batch", fake_batch)
 
     raw_txs = [
         {
@@ -148,7 +135,9 @@ def test_pipeline_metadata_failures_do_not_crash(monkeypatch) -> None:
         }
     ]
 
-    events = asyncio.run(normalize.normalize_wallet_events("WALLET", raw_txs))
+    events = asyncio.run(
+        normalize.normalize_wallet_events("WALLET", raw_txs, mint_cache_path=tmp_path / "mint_meta.json")
+    )
 
     class FixedPriceProvider:
         def price_aud(self, mint: str, ts: datetime, *, context: dict | None = None) -> Decimal:

@@ -17,7 +17,7 @@ def test_compute_fetches_missing_cache_with_fy_filters(monkeypatch) -> None:
     monkeypatch.setattr(cli.fetch_mod, "fetch_wallet", fake_fetch_wallet)
     monkeypatch.setattr(cli.fetch_mod, "load_cached", lambda _: [])
 
-    async def fake_normalize(_: str, __: list[dict]) -> list[cli.NormalizedEvent]:
+    async def fake_normalize(_: str, __: list[dict], **kwargs: object) -> list[cli.NormalizedEvent]:
         return []
 
     monkeypatch.setattr(cli, "_normalize_wallet", fake_normalize)

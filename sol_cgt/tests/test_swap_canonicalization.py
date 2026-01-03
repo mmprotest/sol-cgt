@@ -6,15 +6,7 @@ from decimal import Decimal
 from sol_cgt.ingestion import normalize
 
 
-def test_routed_swap_canonicalization(monkeypatch) -> None:
-    async def fake_metadata(mint: str):
-        return (mint[:3], 6)
-
-    async def fake_jupiter_metadata(mint: str):
-        return (None, None)
-
-    monkeypatch.setattr(normalize.jupiter, "token_metadata", fake_jupiter_metadata)
-    monkeypatch.setattr(normalize.birdeye, "token_metadata", fake_metadata)
+def test_routed_swap_canonicalization(tmp_path) -> None:
 
     raw_tx = {
         "signature": "sigswap",
@@ -68,7 +60,13 @@ def test_routed_swap_canonicalization(monkeypatch) -> None:
         ],
     }
 
-    events = asyncio.run(normalize.normalize_wallet_events("WALLET", [raw_tx]))
+    events = asyncio.run(
+        normalize.normalize_wallet_events(
+            "WALLET",
+            [raw_tx],
+            mint_cache_path=tmp_path / "mint_meta.json",
+        )
+    )
     assert all(ev.kind == "swap" for ev in events)
     assert len(events) == 4
     totals = {}

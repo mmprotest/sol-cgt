@@ -14,5 +14,6 @@ api_keys:
   birdeye: YOUR_KEY
   jupiter: YOUR_KEY
 helius_base_url: https://api-mainnet.helius-rpc.com
+helius_rpc_url: null
 helius_tx_limit: 100
 helius_max_pages: 100

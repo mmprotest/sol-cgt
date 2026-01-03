@@ -69,8 +69,19 @@ if "ctx" in inspect.signature(click.Parameter.make_metavar).parameters:
     click.Parameter.make_metavar = _patched_make_metavar  # type: ignore[assignment]
 
 
-async def _normalize_wallet(wallet: str, raw_items: list[dict]) -> list[NormalizedEvent]:
-    return await normalize.normalize_wallet_events(wallet, raw_items)
+async def _normalize_wallet(
+    wallet: str,
+    raw_items: list[dict],
+    *,
+    prefetch_mints: bool = True,
+    rpc_url: Optional[str] = None,
+) -> list[NormalizedEvent]:
+    return await normalize.normalize_wallet_events(
+        wallet,
+        raw_items,
+        prefetch_mints=prefetch_mints,
+        rpc_url=rpc_url,
+    )
 
 
 def _collect_wallets(wallet_values: Optional[List[str]]) -> List[str]:
@@ -114,6 +125,14 @@ def _dependency_versions(packages: list[str]) -> dict[str, str]:
         except metadata.PackageNotFoundError:
             versions[package] = "not-installed"
     return versions
+
+
+def _resolve_rpc_url(settings) -> Optional[str]:
+    if settings.helius_rpc_url:
+        return settings.helius_rpc_url
+    if settings.api_keys.helius:
+        return f"{settings.helius_base_url}/?api-key={settings.api_keys.helius}"
+    return None
 
 
 @app.command()
@@ -181,6 +200,11 @@ def compute(
         "--fetch/--no-fetch",
         help="Fetch txs from Helius if cache is empty or missing",
     ),
+    prefetch_mints: bool = typer.Option(
+        True,
+        "--prefetch-mints/--no-prefetch-mints",
+        help="Prefetch mint decimals via batch RPC before normalization",
+    ),
 ) -> None:
     _configure_logging()
     parsed_wallets = _collect_wallets(wallet)
@@ -197,6 +221,7 @@ def compute(
     kind_counts: dict[str, int] = {}
     gte_time = int(fy_period.start.timestamp()) if fy_period else None
     lte_time = int(fy_period.end.timestamp()) if fy_period else None
+    rpc_url = _resolve_rpc_url(settings)
     for addr in wallets:
         if not fetch_mod.cache_has_data(addr):
             if fetch:
@@ -217,7 +242,14 @@ def compute(
                 )
                 continue
         raw_items = fetch_mod.load_cached(addr)
-        wallet_events = asyncio.run(_normalize_wallet(addr, raw_items))
+        wallet_events = asyncio.run(
+            _normalize_wallet(
+                addr,
+                raw_items,
+                prefetch_mints=prefetch_mints,
+                rpc_url=rpc_url,
+            )
+        )
         logger.info(
             "Wallet %s raw_txs_loaded=%s normalized_events_count=%s",
             addr,

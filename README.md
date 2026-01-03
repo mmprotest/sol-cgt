@@ -30,13 +30,13 @@ If you're new to Python tooling, follow these steps exactly.
 
    The first time this runs it may take a few minutes while Poetry creates an isolated virtual environment.
 
-4. **Provide your API keys (optional for pricing)**
+4. **Provide your API keys (required for fetch, optional for pricing)**
 
    ```bash
    cp .env.example .env
    ```
 
-   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (required only for `fetch`). If you also add a [Birdeye](https://birdeye.so/) key the tool can source token prices directly from Birdeye. Don't have a Birdeye key? No problem — the app uses free price and FX sources by default.
+   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (`HELIUS_API_KEY`, required for `fetch`). If you also add a [Birdeye](https://birdeye.so/) key (`BIRDEYE_API_KEY`) the tool can source token prices directly from Birdeye. Don't have a Birdeye key? No problem — the app uses free price and FX sources by default.
 
 5. **(Optional) Create a config file**
 
@@ -64,7 +64,7 @@ If you're new to Python tooling, follow these steps exactly.
      --xlsx out.xlsx
    ```
 
-   This runs the entire pipeline (normalisation → reconciliation → accounting → reporting). Reports are written to `./reports/<wallet_or_combined>/<financial_year>/` in CSV/Parquet format, and the XLSX is written to the path you pass via `--xlsx`. The console also prints rich tables summarising gains/losses and any items needing attention.
+   This runs the entire pipeline (normalisation → reconciliation → accounting → reporting). Reports are written to `./reports/<wallet_or_combined>/<financial_year>/` in CSV/Parquet format (use `--format csv|parquet|both`), and the XLSX is written to the path you pass via `--xlsx`. The console also prints rich tables summarising gains/losses and any items needing attention. You can also scope the output with `--fy-start`/`--fy-end` instead of `--fy`.
 
 Need a reminder of the available options? Use:
 
@@ -77,7 +77,7 @@ poetry run solcgt report --help
 
 - Multi-wallet aggregation with self-transfer reconciliation.
 - Deterministic lot matching using FIFO/LIFO/HIFO/Specific ID.
-- Cached price and FX lookups to avoid repeated API calls (CoinGecko + Jupiter + frankfurter.app; Birdeye optional).
+- Cached price and FX lookups to avoid repeated API calls (CoinGecko for SOL, Jupiter for tokens, optional Birdeye, FX via frankfurter.app with an RBA fallback).
 - Structured CSV/Parquet/XLSX exports and console summaries via `rich`.
 
 ## CLI examples
@@ -92,11 +92,11 @@ poetry run solcgt compute \
   --outdir out/
 ```
 
-Use `--dry-run` to normalize without accounting.
+Use `--dry-run` to normalize without accounting. `report` is a backward-compatible alias for `compute`.
 
 Config flags:
 - `external_lot_tracking`: attempt to match transfers returning from external wallets (default true).
-- `fx_source`: `frankfurter` (default) or `rba`.
+- `fx_source`: `frankfurter` (default) or `rba` (Reserve Bank of Australia data).
 
 ## Migration notes
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import logging
 from datetime import timezone
 from decimal import Decimal
 from pathlib import Path
@@ -24,6 +25,7 @@ from . import utils
 from .utils import australian_financial_year_bounds, parse_local_date
 
 _orig_option_init = typer.core.TyperOption.__init__
+logger = logging.getLogger(__name__)
 
 
 def _patched_option_init(self: typer.core.TyperOption, **kwargs) -> None:
@@ -82,6 +84,7 @@ def fetch(
     wallet: List[str] = typer.Option(None, "--wallet", "-w", help="Wallet address", show_default=False),
     config: Optional[Path] = typer.Option(None, "--config", help="Config YAML"),
     before: Optional[str] = typer.Option(None, help="Pagination cursor"),
+    after: Optional[str] = typer.Option(None, help="Pagination start signature"),
     limit: Optional[int] = typer.Option(None, "--limit", help="Helius page size (1-100)"),
     max_pages: Optional[int] = typer.Option(None, "--max-pages", help="Maximum pages to fetch"),
     fy: Optional[str] = typer.Option(None, "--fy", help="Australian financial year (e.g. 2024-2025)"),
@@ -102,16 +105,19 @@ def fetch(
     resolved_limit = limit if limit is not None else settings.helius_tx_limit
     resolved_max_pages = max_pages if max_pages is not None else settings.helius_max_pages
     _, fy_period = _resolve_fy_period(fy, fy_start, fy_end)
-    fy_start_ts = int(fy_period.start.timestamp()) if fy_period else None
+    gte_time = int(fy_period.start.timestamp()) if fy_period else None
+    lte_time = int(fy_period.end.timestamp()) if fy_period else None
     append_flag = append if isinstance(append, bool) else str(append).lower() in {"1", "true", "yes"}
     asyncio.run(
         fetch_mod.fetch_many(
             wallets,
-            before=before,
+            before_signature=before,
+            after_signature=after,
             limit=resolved_limit,
             api_key=api_key,
             base_url=base_url,
-            fy_start_ts=fy_start_ts,
+            gte_time=gte_time,
+            lte_time=lte_time,
             max_pages=resolved_max_pages,
             append=append_flag,
         )
@@ -131,6 +137,11 @@ def compute(
     fmt: str = typer.Option("csv", "--format", help="Report format", show_default=True),
     xlsx_path: Optional[Path] = typer.Option(None, "--xlsx", help="Output XLSX path"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Normalize only, no accounting"),
+    fetch: bool = typer.Option(
+        True,
+        "--fetch/--no-fetch",
+        help="Fetch txs from Helius if cache is empty or missing",
+    ),
 ) -> None:
     parsed_wallets = _collect_wallets(wallet)
     overrides = {"wallets": parsed_wallets} if parsed_wallets else {}
@@ -142,10 +153,44 @@ def compute(
         raise typer.BadParameter("No wallets provided")
     fy_label, fy_period = _resolve_fy_period(fy, fy_start, fy_end)
     events: List[NormalizedEvent] = []
+    kind_counts: dict[str, int] = {}
+    gte_time = int(fy_period.start.timestamp()) if fy_period else None
+    lte_time = int(fy_period.end.timestamp()) if fy_period else None
     for addr in wallets:
+        if not fetch_mod.cache_has_data(addr):
+            if fetch:
+                asyncio.run(
+                    fetch_mod.fetch_wallet(
+                        addr,
+                        api_key=settings.api_keys.helius,
+                        base_url=settings.helius_base_url,
+                        limit=settings.helius_tx_limit,
+                        max_pages=settings.helius_max_pages,
+                        gte_time=gte_time,
+                        lte_time=lte_time,
+                    )
+                )
+            else:
+                typer.echo(
+                    f"Skipping {addr}: cache empty or missing and --no-fetch specified"
+                )
+                continue
         raw_items = fetch_mod.load_cached(addr)
         wallet_events = asyncio.run(_normalize_wallet(addr, raw_items))
+        logger.info(
+            "Wallet %s raw_txs_loaded=%s normalized_events_count=%s",
+            addr,
+            len(raw_items),
+            len(wallet_events),
+        )
         events.extend(wallet_events)
+        for ev in wallet_events:
+            kind_counts[ev.kind] = kind_counts.get(ev.kind, 0) + 1
+    if kind_counts:
+        breakdown = ", ".join(f"{kind}={count}" for kind, count in sorted(kind_counts.items()))
+        logger.info("Normalized event breakdown: %s", breakdown)
+    else:
+        logger.info("Normalized event breakdown: none")
     matches = transfers.detect_self_transfers(events, wallets)
     if settings.api_keys.birdeye:
         price_provider = AudPriceProvider(api_key=settings.api_keys.birdeye, fx_source=settings.fx_source)
@@ -181,6 +226,12 @@ def compute(
     summary_by_token = summaries.summarize_by_token(disposals)
     summary_overall = summaries.summarize_overall(disposals)
     wallet_summary = summaries.summarize_by_wallet(disposals)
+    if not disposals:
+        breakdown = ", ".join(f"{kind}={count}" for kind, count in sorted(kind_counts.items())) or "none"
+        logger.warning(
+            "No disposals detected. Event breakdown: %s. Check for swap/outflow events or empty cache.",
+            breakdown,
+        )
     output_dir = outdir or Path("./reports") / ("combined" if len(wallets) > 1 else wallets[0])
     if fy_label:
         output_dir = output_dir / fy_label

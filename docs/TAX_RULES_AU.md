@@ -40,6 +40,8 @@ not tax advice.
 ### Fee attribution
 - Network fees are applied **only** to the fee payer.
 - Fees reduce proceeds for disposals and increase cost base for acquisitions.
+- `unit_cost_aud` **excludes** acquisition fees. Historical fees are stored separately on each
+  lot as `fees_aud` and prorated into disposal cost base based on the lot quantity consumed.
 - Self-transfer and out-of-scope move fees are attached to the moved lots and tracked in the
   lot-move audit log; they are not treated as taxable disposals.
 

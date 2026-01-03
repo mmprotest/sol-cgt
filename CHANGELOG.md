@@ -4,6 +4,7 @@
 - Canonicalized swaps to prevent double counting and added fee-payer attribution.
 - Added multi-wallet lot moves for self-transfers and out-of-scope external transfer warnings.
 - Implemented free pricing/FX fallbacks with cached providers and XLSX export.
+- Lot fees now prorate into disposal cost base and are no longer baked into unit costs.
 
 ### How to run (FY 2024-2025)
 ```bash

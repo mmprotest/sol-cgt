@@ -229,10 +229,15 @@ class AccountingEngine:
         gross_proceeds = proceeds_aud
         for lot, qty_used in allocation:
             portion = qty_used / base.amount if base.amount > 0 else Decimal("0")
+            remaining_qty = lot.remaining_qty if lot.remaining_qty else lot.qty_acquired
+            lot_fee_share = (
+                lot.fees_aud * (qty_used / remaining_qty) if remaining_qty else Decimal("0")
+            )
             lot_cost = utils.quantize_aud(lot.unit_cost_aud * qty_used)
             fee_share = utils.quantize_aud(fee_aud * portion)
             proceeds_share = utils.quantize_aud(gross_proceeds * portion)
-            gain_loss = utils.quantize_aud(proceeds_share - fee_share - lot_cost)
+            cost_base = lot_cost + lot_fee_share
+            gain_loss = utils.quantize_aud(proceeds_share - fee_share - cost_base)
             held_days = utils.holding_period_days(lot.ts, event.ts)
             long_term = held_days >= self.long_term_days
             record = DisposalRecord(
@@ -243,7 +248,7 @@ class AccountingEngine:
                 token_symbol=base.symbol,
                 qty_disposed=qty_used,
                 proceeds_aud=proceeds_share,
-                cost_base_aud=lot_cost,
+                cost_base_aud=cost_base,
                 fees_aud=fee_share,
                 gain_loss_aud=gain_loss,
                 long_term=long_term,
@@ -253,6 +258,9 @@ class AccountingEngine:
                 notes=f"lot_id={lot.lot_id}",
             )
             records.append(record)
+            lot.fees_aud = lot.fees_aud - lot_fee_share
+            if lot.fees_aud < Decimal("0"):
+                lot.fees_aud = Decimal("0")
             self.ledger.update_remaining(lot, qty_used)
         return records
 
@@ -275,11 +283,7 @@ class AccountingEngine:
         else:
             price = self._resolve_price(event, quote)
             total_cost = utils.quantize_aud(price * qty)
-        if event.base_token is None:
-            total_cost += fee_aud
-            lot_fee = fee_aud
-        else:
-            lot_fee = Decimal("0")
+        lot_fee = fee_aud if event.base_token is None else Decimal("0")
         unit_cost = utils.quantize_aud(total_cost / qty) if qty != 0 else Decimal("0")
         lot = AcquisitionLot(
             lot_id=f"{event.id}:{quote.mint}",

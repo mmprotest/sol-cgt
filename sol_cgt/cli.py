@@ -82,6 +82,11 @@ def fetch(
     wallet: List[str] = typer.Option(None, "--wallet", "-w", help="Wallet address", show_default=False),
     config: Optional[Path] = typer.Option(None, "--config", help="Config YAML"),
     before: Optional[str] = typer.Option(None, help="Pagination cursor"),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Helius page size (1-100)"),
+    max_pages: Optional[int] = typer.Option(None, "--max-pages", help="Maximum pages to fetch"),
+    fy: Optional[str] = typer.Option(None, "--fy", help="Australian financial year (e.g. 2024-2025)"),
+    fy_start: Optional[str] = typer.Option(None, "--fy-start", help="Financial year start (YYYY-MM-DD)"),
+    fy_end: Optional[str] = typer.Option(None, "--fy-end", help="Financial year end (YYYY-MM-DD)"),
     append: bool = typer.Option(False, "--append", help="Append to cache instead of overwriting"),
 ) -> None:
     """Fetch raw transactions for the supplied wallets."""
@@ -93,8 +98,24 @@ def fetch(
     if not wallets:
         raise typer.BadParameter("No wallets provided")
     api_key = settings.api_keys.helius
+    base_url = settings.helius_base_url
+    resolved_limit = limit if limit is not None else settings.helius_tx_limit
+    resolved_max_pages = max_pages if max_pages is not None else settings.helius_max_pages
+    _, fy_period = _resolve_fy_period(fy, fy_start, fy_end)
+    fy_start_ts = int(fy_period.start.timestamp()) if fy_period else None
     append_flag = append if isinstance(append, bool) else str(append).lower() in {"1", "true", "yes"}
-    asyncio.run(fetch_mod.fetch_many(wallets, before=before, api_key=api_key, append=append_flag))
+    asyncio.run(
+        fetch_mod.fetch_many(
+            wallets,
+            before=before,
+            limit=resolved_limit,
+            api_key=api_key,
+            base_url=base_url,
+            fy_start_ts=fy_start_ts,
+            max_pages=resolved_max_pages,
+            append=append_flag,
+        )
+    )
     typer.echo(f"Fetched transactions for {len(wallets)} wallet(s)")
 
 

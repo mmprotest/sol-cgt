@@ -67,6 +67,9 @@ class AppSettings(BaseSettings):
     external_lot_tracking: bool = True
     apply_cgt_discount: bool = False
     api_keys: APIKeys = Field(default_factory=APIKeys)
+    helius_base_url: str = "https://api-mainnet.helius-rpc.com"
+    helius_tx_limit: int = Field(default=100, ge=1, le=100)
+    helius_max_pages: int = Field(default=100, ge=1)
 
     @classmethod
     def settings_customise_sources(

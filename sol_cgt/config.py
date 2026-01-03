@@ -64,7 +64,7 @@ class AppSettings(BaseSettings):
     fx_source: str = "frankfurter"
     airdrop_cost: str = "zero"
     treat_liquidity_as_disposal: bool = False
-    external_lot_tracking: bool = False
+    external_lot_tracking: bool = True
     apply_cgt_discount: bool = False
     api_keys: APIKeys = Field(default_factory=APIKeys)
 

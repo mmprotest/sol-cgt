@@ -26,7 +26,7 @@ multi-wallet CGT processing.
 - **Module:** `sol_cgt/accounting/engine.py`
 - **Lots:** FIFO/LIFO/HIFO (and Specific ID) lot allocation.
 - **Self-transfers:** move lots between wallets (same acquisition date and unit cost) without taxable events.
-- **External transfers:** move lots to an out-of-scope bucket with warnings (optional external tracking).
+- **External transfers:** move lots to an out-of-scope bucket with warnings (external tracking enables returns).
 - **Fee treatment:** fees reduce proceeds for disposals and increase cost base for acquisitions.
 - **Invariant:** events are processed in deterministic order; lots are updated consistently.
 

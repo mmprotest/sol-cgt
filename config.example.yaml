@@ -7,7 +7,7 @@ price_source: auto
 fx_source: frankfurter
 airdrop_cost: zero
 treat_liquidity_as_disposal: false
-external_lot_tracking: false
+external_lot_tracking: true
 apply_cgt_discount: false
 api_keys:
   helius: YOUR_KEY

@@ -113,3 +113,37 @@ def test_self_transfer_fee_not_disposed() -> None:
     result = engine.process(events, wallets=[w1, w2], transfer_matches=matches)
     assert len(result.disposals) == 0
     assert len(result.lot_moves) == 1
+    moved_lot = next(lot for lot in result.acquisitions if lot.wallet == w2)
+    assert moved_lot.fees_aud == Decimal("0.10")
+
+
+def test_out_of_scope_transfer_allocates_fees() -> None:
+    ts1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    ts2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
+    wallet = "W1"
+    external = "EXT"
+    buy = _event(
+        "tx1#0",
+        "buy",
+        ts=ts1,
+        wallet=wallet,
+        quote=_token("TOKENZ", 10, decimals=0, symbol="TKZ"),
+    )
+    buy.raw["cost_aud"] = "100"
+    transfer_out = _event(
+        "tx2#0",
+        "transfer_out",
+        ts=ts2,
+        wallet=wallet,
+        base=_token("TOKENZ", 4, decimals=0, symbol="TKZ"),
+        fee_sol=Decimal("0.002"),
+        counterparty=external,
+    )
+    events = [buy, transfer_out]
+    engine = AccountingEngine(price_provider=SimplePriceProvider({"SOL": Decimal("50")}))
+    result = engine.process(events, wallets=[wallet])
+    assert len(result.disposals) == 0
+    assert len(result.lot_moves) == 1
+    external_lot = next(lot for lot in result.acquisitions if lot.wallet.startswith("__external__"))
+    assert external_lot.qty_acquired == Decimal("4")
+    assert external_lot.fees_aud == Decimal("0.10")

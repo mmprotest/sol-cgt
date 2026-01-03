@@ -58,6 +58,8 @@ def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPric
             qty = token.amount
             if "proceeds_aud" in event.raw:
                 value_aud = Decimal(str(event.raw["proceeds_aud"]))
+            elif "proceeds_hint_aud" in event.raw:
+                value_aud = Decimal(str(event.raw["proceeds_hint_aud"]))
             else:
                 price = price_provider.price_aud(token.mint, event.ts, context=event.raw)
                 value_aud = utils.quantize_aud(price * token.amount)
@@ -69,6 +71,8 @@ def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPric
             qty = token.amount
             if "cost_aud" in event.raw:
                 value_aud = Decimal(str(event.raw["cost_aud"]))
+            elif "cost_hint_aud" in event.raw:
+                value_aud = Decimal(str(event.raw["cost_hint_aud"]))
             else:
                 price = price_provider.price_aud(token.mint, event.ts, context=event.raw)
                 value_aud = utils.quantize_aud(price * token.amount)

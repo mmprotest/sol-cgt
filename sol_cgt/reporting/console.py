@@ -7,10 +7,14 @@ from typing import Iterable, Sequence
 from rich.console import Console
 from rich.table import Table
 
-from ..types import AcquisitionLot, DisposalRecord
+from ..types import AcquisitionLot, DisposalRecord, WarningRecord
 
 
-def render_summary(disposals: Sequence[DisposalRecord], acquisitions: Sequence[AcquisitionLot]) -> None:
+def render_summary(
+    disposals: Sequence[DisposalRecord],
+    acquisitions: Sequence[AcquisitionLot],
+    warnings: Sequence[WarningRecord] | None = None,
+) -> None:
     console = Console()
     if disposals:
         table = Table(title="Disposals Summary", show_lines=False)
@@ -39,3 +43,5 @@ def render_summary(disposals: Sequence[DisposalRecord], acquisitions: Sequence[A
         for lot in unresolved:
             warn_table.add_row(lot.lot_id, lot.token_symbol or lot.token_mint, f"{lot.remaining_qty}")
         console.print(warn_table)
+    if warnings:
+        console.print(f"[yellow]Warnings: {len(warnings)}[/yellow]")

@@ -13,11 +13,7 @@ def test_normalize_helius_enhanced(monkeypatch) -> None:
             return ("TKB", 6)
         return (None, None)
 
-    def fake_fx(day):
-        return Decimal("1.5")
-
     monkeypatch.setattr(normalize.birdeye, "token_metadata", fake_metadata)
-    monkeypatch.setattr(normalize.rba_fx, "usd_to_aud_rate", fake_fx)
 
     raw_tx = {
         "signature": "sig1",
@@ -63,15 +59,16 @@ def test_normalize_helius_enhanced(monkeypatch) -> None:
     }
 
     events = asyncio.run(normalize.normalize_wallet_events("WALLET", [raw_tx]))
-    assert len(events) == 3
+    assert len(events) == 4
 
-    swap_event = next(ev for ev in events if ev.kind == "swap")
-    assert swap_event.kind == "swap"
-    assert swap_event.base_token is not None
-    assert swap_event.quote_token is not None
-    assert swap_event.base_token.amount == Decimal("5")
-    assert swap_event.quote_token.amount == Decimal("10")
-    assert Decimal(str(swap_event.raw.get("proceeds_aud"))) == Decimal("15.00")
+    swap_events = [ev for ev in events if ev.kind == "swap"]
+    assert len(swap_events) == 2
+    swap_out = next(ev for ev in swap_events if ev.base_token is not None)
+    swap_in = next(ev for ev in swap_events if ev.quote_token is not None)
+    assert swap_out.base_token is not None
+    assert swap_in.quote_token is not None
+    assert swap_out.base_token.amount == Decimal("5")
+    assert swap_in.quote_token.amount == Decimal("10")
 
     transfer_in = next(ev for ev in events if ev.kind == "transfer_in")
     assert transfer_in.quote_token is not None

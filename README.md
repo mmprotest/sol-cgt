@@ -4,7 +4,7 @@
 token trading with an emphasis on auditability and Australian tax reporting.
 The project ingests transactions via the Helius Enhanced API, normalises them
 into a canonical event model, performs lot based cost base tracking and emits
-CSV/Parquet reports as well as pretty console summaries.
+CSV/Parquet/XLSX reports as well as pretty console summaries.
 
 ## Quick start
 
@@ -30,13 +30,13 @@ If you're new to Python tooling, follow these steps exactly.
 
    The first time this runs it may take a few minutes while Poetry creates an isolated virtual environment.
 
-4. **Provide your API keys**
+4. **Provide your API keys (optional for pricing)**
 
    ```bash
    cp .env.example .env
    ```
 
-   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (this one is required). If you also add a [Birdeye](https://birdeye.so/) key the tool can source token prices directly from Birdeye. Don't have a Birdeye key? No problem—the app will fall back to on-chain swap prices and CoinGecko where available, you just get better coverage and fewer "missing price" warnings when a Birdeye key is present.
+   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (required only for `fetch`). If you also add a [Birdeye](https://birdeye.so/) key the tool can source token prices directly from Birdeye. Don't have a Birdeye key? No problem — the app uses free price and FX sources by default.
 
 5. **(Optional) Create a config file**
 
@@ -57,13 +57,14 @@ If you're new to Python tooling, follow these steps exactly.
 7. **Generate the capital gains report**
 
    ```bash
-   poetry run solcgt report \
+   poetry run solcgt compute \
      -w <YOUR_WALLET_ADDRESS> \
      --fy "2024-2025" \
-     --format both
+     --format both \
+     --xlsx out.xlsx
    ```
 
-   This runs the entire pipeline (normalisation → reconciliation → accounting → reporting). Reports are written to `./reports/<wallet_or_combined>/<financial_year>/` in both CSV and Parquet format. The console also prints rich tables summarising gains/losses and any items needing attention.
+   This runs the entire pipeline (normalisation → reconciliation → accounting → reporting). Reports are written to `./reports/<wallet_or_combined>/<financial_year>/` in CSV/Parquet format, and the XLSX is written to the path you pass via `--xlsx`. The console also prints rich tables summarising gains/losses and any items needing attention.
 
 Need a reminder of the available options? Use:
 
@@ -76,8 +77,31 @@ poetry run solcgt report --help
 
 - Multi-wallet aggregation with self-transfer reconciliation.
 - Deterministic lot matching using FIFO/LIFO/HIFO/Specific ID.
-- Cached price and FX lookups to avoid repeated API calls.
-- Structured CSV/Parquet exports and console summaries via `rich`.
+- Cached price and FX lookups to avoid repeated API calls (CoinGecko + Jupiter + frankfurter.app; Birdeye optional).
+- Structured CSV/Parquet/XLSX exports and console summaries via `rich`.
+
+## CLI examples
+
+```bash
+poetry run solcgt compute \
+  --wallet <ADDR1> \
+  --wallet <ADDR2> \
+  --fy "2024-2025" \
+  --method FIFO \
+  --xlsx out.xlsx \
+  --outdir out/
+```
+
+Use `--dry-run` to normalize without accounting.
+
+Config flags:
+- `external_lot_tracking`: attempt to match transfers returning from external wallets (default false).
+- `fx_source`: `frankfurter` (default) or `rba`.
+
+## Migration notes
+
+- Transfers between included wallets are now treated as non-taxable lot moves.
+- Transfers to external wallets are treated as out-of-scope moves with warnings (no disposal).
 
 ## Development
 

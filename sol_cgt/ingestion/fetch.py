@@ -58,4 +58,15 @@ async def fetch_many(
 
 def load_cached(wallet: str) -> list[dict]:
     path = _wallet_cache_path(wallet)
-    return list(utils.read_jsonl(path))
+    items = []
+    seen: set[str] = set()
+    for entry in utils.read_jsonl(path):
+        signature = entry.get("signature") or entry.get("id")
+        if not signature:
+            items.append(entry)
+            continue
+        if signature in seen:
+            continue
+        seen.add(signature)
+        items.append(entry)
+    return items

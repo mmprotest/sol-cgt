@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Iterable, List, Optional
 
 from .. import utils
-from ..providers import birdeye
+from ..providers import birdeye, jupiter
 from ..types import NormalizedEvent, TokenAmount
 
 LAMPORTS_PER_SOL = Decimal("1000000000")
@@ -30,10 +30,15 @@ def _amount_raw_from_decimal(amount: Decimal, decimals: int) -> int:
     return int((amount * scale).to_integral_value())
 
 
-async def _metadata_for_mint(mint: str, cache: dict[str, tuple[Optional[str], Optional[int]]]) -> tuple[Optional[str], Optional[int]]:
+async def _metadata_for_mint(
+    mint: str,
+    cache: dict[str, tuple[Optional[str], Optional[int]]],
+) -> tuple[Optional[str], Optional[int]]:
     if mint in cache:
         return cache[mint]
-    symbol, decimals = await birdeye.token_metadata(mint)
+    symbol, decimals = await jupiter.token_metadata(mint)
+    if symbol is None and decimals is None:
+        symbol, decimals = await birdeye.token_metadata(mint)
     cache[mint] = (symbol, decimals)
     return symbol, decimals
 
@@ -43,6 +48,7 @@ async def _build_token_amount(
     *,
     fallback_mint: Optional[str] = None,
     metadata_cache: dict[str, tuple[Optional[str], Optional[int]]],
+    decimal_warning_mints: set[str],
 ) -> Optional[TokenAmount]:
     if not payload and not fallback_mint:
         return None
@@ -63,6 +69,7 @@ async def _build_token_amount(
         amount_raw = _amount_raw_from_decimal(Decimal(str(amount)), int(decimals))
     if decimals is None:
         decimals = 0
+        decimal_warning_mints.add(mint)
     if amount_raw is None:
         amount_raw = 0
     return TokenAmount(mint=mint, symbol=symbol, decimals=int(decimals), amount_raw=int(amount_raw))
@@ -163,12 +170,14 @@ async def _build_swap_legs(
     swap_event: dict,
     *,
     metadata_cache: dict[str, tuple[Optional[str], Optional[int]]],
+    decimal_warning_mints: set[str],
 ) -> List[SwapLeg]:
     legs: List[SwapLeg] = []
     for entry in swap_event.get("tokenInputs") or []:
         token = await _build_token_amount(
             _swap_token_payload(entry),
             metadata_cache=metadata_cache,
+            decimal_warning_mints=decimal_warning_mints,
         )
         if token is not None and token.amount > 0:
             legs.append(
@@ -182,6 +191,7 @@ async def _build_swap_legs(
         token = await _build_token_amount(
             _swap_token_payload(entry),
             metadata_cache=metadata_cache,
+            decimal_warning_mints=decimal_warning_mints,
         )
         if token is not None and token.amount > 0:
             legs.append(
@@ -196,6 +206,7 @@ async def _build_swap_legs(
         token = await _build_token_amount(
             _native_amount_payload(native_input),
             metadata_cache=metadata_cache,
+            decimal_warning_mints=decimal_warning_mints,
         )
         if token is not None and token.amount > 0:
             legs.append(SwapLeg(token=token, direction="out", price_aud=None))
@@ -204,15 +215,22 @@ async def _build_swap_legs(
         token = await _build_token_amount(
             _native_amount_payload(native_output),
             metadata_cache=metadata_cache,
+            decimal_warning_mints=decimal_warning_mints,
         )
         if token is not None and token.amount > 0:
             legs.append(SwapLeg(token=token, direction="in", price_aud=None))
     return legs
 
 
+def _attach_decimal_warning(raw: dict, token: TokenAmount, decimal_warning_mints: set[str]) -> None:
+    if token.mint in decimal_warning_mints:
+        raw["decimals_defaulted_mints"] = sorted({token.mint} | set(raw.get("decimals_defaulted_mints", [])))
+
+
 async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[NormalizedEvent]:
     events: List[NormalizedEvent] = []
     metadata_cache: dict[str, tuple[Optional[str], Optional[int]]] = {}
+    decimal_warning_mints: set[str] = set()
 
     for tx in raw_txs:
         if tx.get("transactionError"):
@@ -233,7 +251,11 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
         tx_events: List[NormalizedEvent] = []
 
         if swap_event:
-            legs = await _build_swap_legs(swap_event, metadata_cache=metadata_cache)
+            legs = await _build_swap_legs(
+                swap_event,
+                metadata_cache=metadata_cache,
+                decimal_warning_mints=decimal_warning_mints,
+            )
             deltas: dict[str, Decimal] = {}
             meta: dict[str, tuple[Optional[str], Optional[int]]] = {}
             values_in: dict[str, Decimal] = {}
@@ -294,10 +316,23 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                     "decimals": decimals,
                     "amount": str(abs(net)),
                 }
-                token = await _build_token_amount(payload, metadata_cache=metadata_cache)
+                token = await _build_token_amount(
+                    payload,
+                    metadata_cache=metadata_cache,
+                    decimal_warning_mints=decimal_warning_mints,
+                )
                 if token is None:
                     continue
                 is_out = net < 0
+                raw_payload = {
+                    "swap": swap_event,
+                    "signature": signature,
+                    "source": "helius_swap",
+                    "swap_direction": "out" if is_out else "in",
+                    "swap_net_delta": str(net),
+                    **({"swap_hint_missing": hint_missing} if hint_missing else {}),
+                }
+                _attach_decimal_warning(raw_payload, token, decimal_warning_mints)
                 tx_events.append(
                     NormalizedEvent(
                         id=f"{event_prefix}#swap{idx}",
@@ -308,14 +343,7 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                         fee_sol=Decimal("0"),
                         wallet=wallet,
                         counterparty=swap_event.get("marketplace") if isinstance(swap_event, dict) else None,
-                        raw={
-                            "swap": swap_event,
-                            "signature": signature,
-                            "source": "helius_swap",
-                            "swap_direction": "out" if is_out else "in",
-                            "swap_net_delta": str(net),
-                            **({"swap_hint_missing": hint_missing} if hint_missing else {}),
-                        },
+                        raw=raw_payload,
                         tags=set(),
                     )
                 )
@@ -334,7 +362,11 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                 "decimals": transfer.get("tokenDecimals"),
                 "amount": transfer.get("tokenAmount"),
             }
-            token = await _build_token_amount(payload, metadata_cache=metadata_cache)
+            token = await _build_token_amount(
+                payload,
+                metadata_cache=metadata_cache,
+                decimal_warning_mints=decimal_warning_mints,
+            )
             if token is None:
                 continue
             if swap_event and direction and _consume_swap_leg(swap_legs, token.mint, direction, token.amount):
@@ -343,6 +375,14 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
             base_token = token if kind == "transfer_out" else None
             quote_token = token if kind == "transfer_in" else None
             counterparty = transfer.get("fromUserAccount") if kind == "transfer_in" else transfer.get("toUserAccount")
+            raw_payload = {
+                "transfer": transfer,
+                "signature": signature,
+                "source": "helius_token_transfer",
+                "source_wallet": transfer.get("fromUserAccount") or transfer.get("source"),
+                "destination_wallet": transfer.get("toUserAccount") or transfer.get("destination"),
+            }
+            _attach_decimal_warning(raw_payload, token, decimal_warning_mints)
             tx_events.append(
                 NormalizedEvent(
                     id=f"{event_prefix}#tok{idx}",
@@ -353,13 +393,7 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                     fee_sol=Decimal("0"),
                     wallet=wallet,
                     counterparty=counterparty,
-                    raw={
-                        "transfer": transfer,
-                        "signature": signature,
-                        "source": "helius_token_transfer",
-                        "source_wallet": transfer.get("fromUserAccount") or transfer.get("source"),
-                        "destination_wallet": transfer.get("toUserAccount") or transfer.get("destination"),
-                    },
+                    raw=raw_payload,
                     tags=set(),
                 )
             )
@@ -368,7 +402,11 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
             matches, direction = _transfer_matches_wallet(transfer, wallet)
             if not matches:
                 continue
-            token = await _build_token_amount(_native_amount_payload(transfer), metadata_cache=metadata_cache)
+            token = await _build_token_amount(
+                _native_amount_payload(transfer),
+                metadata_cache=metadata_cache,
+                decimal_warning_mints=decimal_warning_mints,
+            )
             if token is None:
                 continue
             if swap_event and direction and _consume_swap_leg(swap_legs, token.mint, direction, token.amount):

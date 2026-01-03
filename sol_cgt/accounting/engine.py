@@ -89,6 +89,7 @@ class AccountingEngine:
         match_by_out = {match.out_event.id: match for match in matches}
         matched_in_ids = {match.in_event.id for match in matches}
         swap_hint_warned: set[str] = set()
+        default_decimals_warned: set[tuple[Optional[str], str]] = set()
 
         for event in sorted(events, key=lambda ev: (ev.ts, ev.id)):
             if event.id in matched_in_ids:
@@ -143,6 +144,25 @@ class AccountingEngine:
                             signature=signature,
                             code="swap_hint_missing_prices",
                             message=f"Swap pricing hints missing for mints: {missing}",
+                        )
+                    )
+            defaulted_mints = event.raw.get("decimals_defaulted_mints")
+            if isinstance(defaulted_mints, list):
+                for mint in defaulted_mints:
+                    key = (event.raw.get("signature"), mint)
+                    if key in default_decimals_warned:
+                        continue
+                    default_decimals_warned.add(key)
+                    warnings.append(
+                        WarningRecord(
+                            ts=event.ts,
+                            wallet=event.wallet,
+                            signature=event.raw.get("signature"),
+                            code="default_decimals",
+                            message=(
+                                f"Token decimals missing for mint {mint}; defaulted to 0. "
+                                "Verify token metadata."
+                            ),
                         )
                     )
 

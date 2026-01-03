@@ -1,6 +1,7 @@
 """Birdeye price and metadata lookup with caching."""
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime
 from decimal import Decimal
@@ -13,6 +14,7 @@ from tenacity import RetryError, retry, retry_if_exception, stop_after_attempt, 
 from .. import utils
 
 API_URL = "https://public-api.birdeye.so"
+LOGGER = logging.getLogger(__name__)
 
 
 class PriceLookupError(RuntimeError):
@@ -43,24 +45,36 @@ async def _perform_request(
     url: str,
     params: dict[str, Any],
     headers: dict[str, str],
-) -> dict[str, Any]:
+    *,
+    allow_not_found: bool = False,
+) -> Optional[dict[str, Any]]:
     response = await client.get(url, params=params, headers=headers)
+    if response.status_code == 404 and allow_not_found:
+        return None
     if response.status_code == 429 or response.status_code >= 500:
         raise httpx.HTTPStatusError("Retryable Birdeye error", request=response.request, response=response)
     response.raise_for_status()
     return response.json()
 
 
-async def _cached_request(url: str, params: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+async def _cached_request(
+    url: str,
+    params: dict[str, Any],
+    headers: dict[str, str],
+    *,
+    allow_not_found: bool = False,
+) -> Optional[dict[str, Any]]:
     cache_key = utils.sha1_digest(f"{url}|{params}")
     path = _cache_path(cache_key)
     if path.exists():
         return utils.json_loads(path.read_text(encoding="utf-8"))
     async with httpx.AsyncClient(timeout=20.0) as client:
         try:
-            data = await _perform_request(client, url, params, headers)
+            data = await _perform_request(client, url, params, headers, allow_not_found=allow_not_found)
         except RetryError as exc:  # pragma: no cover
             raise exc.last_attempt.exception() if exc.last_attempt else exc
+    if data is None:
+        return None
     path.write_text(utils.json_dumps(data), encoding="utf-8")
     return data
 
@@ -117,9 +131,19 @@ async def token_metadata(mint: str, *, api_key: Optional[str] = None) -> Tuple[O
     api_key = api_key or os.getenv("BIRDEYE_API_KEY")
     if not api_key:
         return None, None
-    url = f"{API_URL}/defi/token_data"
+    url = f"{API_URL}/defi/v3/token/meta-data/single"
     params = {"address": mint}
-    payload = await _cached_request(url, params, _headers(api_key))
+    try:
+        payload = await _cached_request(url, params, _headers(api_key), allow_not_found=True)
+    except httpx.HTTPStatusError as exc:
+        LOGGER.warning("Birdeye metadata lookup failed for mint=%s status=%s", mint, exc.response.status_code)
+        return None, None
+    except Exception as exc:  # pragma: no cover - defensive
+        LOGGER.warning("Birdeye metadata lookup failed for mint=%s: %s", mint, exc)
+        return None, None
+    if payload is None:
+        LOGGER.warning("Birdeye metadata not found for mint=%s", mint)
+        return None, None
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, dict):
         return None, None

@@ -67,7 +67,7 @@ class AudPriceProvider:
         if self.api_key:
             try:
                 return self._run_async(birdeye.historical_price_usd(mint, ts, api_key=self.api_key))
-            except birdeye.PriceLookupError:
+            except Exception:
                 pass
         raise birdeye.PriceLookupError(mint, ts, message="Price not available from available sources")
 

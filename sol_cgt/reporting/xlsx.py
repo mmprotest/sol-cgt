@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import logging
 from pathlib import Path
 from typing import Iterable, Sequence
 from openpyxl import Workbook
@@ -44,6 +45,7 @@ def _format_numbers(sheet, columns: Iterable[str], fmt: str) -> None:
 
 def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPriceProvider) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
+    logger = logging.getLogger(__name__)
     for event in sorted(events, key=lambda ev: (ev.ts, ev.raw.get("signature") or ev.id, ev.id)):
         mint = None
         symbol = None
@@ -61,7 +63,11 @@ def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPric
                 value_aud = Decimal(str(event.raw["proceeds_hint_aud"]))
             else:
                 price = price_provider.price_aud(token.mint, event.ts, context=event.raw)
-                value_aud = utils.quantize_aud(price * token.amount)
+                if price is None:
+                    logger.warning("Missing price for mint=%s at %s", token.mint, event.ts.isoformat())
+                    value_aud = Decimal("0")
+                else:
+                    value_aud = utils.quantize_aud(price * token.amount)
             price_aud = utils.quantize_aud(value_aud / token.amount) if token.amount else Decimal("0")
         elif event.quote_token is not None:
             token = event.quote_token
@@ -74,7 +80,11 @@ def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPric
                 value_aud = Decimal(str(event.raw["cost_hint_aud"]))
             else:
                 price = price_provider.price_aud(token.mint, event.ts, context=event.raw)
-                value_aud = utils.quantize_aud(price * token.amount)
+                if price is None:
+                    logger.warning("Missing price for mint=%s at %s", token.mint, event.ts.isoformat())
+                    value_aud = Decimal("0")
+                else:
+                    value_aud = utils.quantize_aud(price * token.amount)
             price_aud = utils.quantize_aud(value_aud / token.amount) if token.amount else Decimal("0")
         fee_aud = Decimal(str(event.raw.get("fee_aud", "0")))
         rows.append(

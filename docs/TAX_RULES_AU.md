@@ -52,6 +52,11 @@ not tax advice.
 - If price data is missing for some swap mints, the engine falls back to spot pricing and emits
   a warning.
 
+### Pricing defaults
+- SOL historical pricing uses Kraken daily OHLC closes (SOL/USD) mapped to Australia/Melbourne
+  dates, then converted to AUD using the daily USD→AUD FX rate for that local date.
+- CoinGecko is only used for SOL pricing if a CoinGecko API key is configured.
+
 ### CGT discount eligibility
 - Disposals held for **≥ 12 months** are flagged as discount-eligible.
 - The 50% discount is **not** applied automatically unless configured by the user.

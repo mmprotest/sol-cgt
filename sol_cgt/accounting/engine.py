@@ -25,7 +25,7 @@ class PriceNotAvailable(RuntimeError):
 
 
 class PriceProvider(Protocol):
-    def price_aud(self, mint: str, ts: datetime, *, context: Optional[dict] = None) -> Decimal:
+    def price_aud(self, mint: str, ts: datetime, *, context: Optional[dict] = None) -> Optional[Decimal]:
         ...
 
 
@@ -43,7 +43,7 @@ class SimplePriceProvider:
 
     overrides: Dict[str, Decimal]
 
-    def price_aud(self, mint: str, ts: datetime, *, context: Optional[dict] = None) -> Decimal:  # noqa: D401
+    def price_aud(self, mint: str, ts: datetime, *, context: Optional[dict] = None) -> Optional[Decimal]:  # noqa: D401
         context = context or {}
         # direct hints
         hints = context.get("price_aud")
@@ -193,6 +193,8 @@ class AccountingEngine:
             return Decimal("0")
         try:
             price = self.price_provider.price_aud("SOL", event.ts, context=event.raw)
+            if price is None:
+                raise PriceNotAvailable("Price not available for SOL fees")
         except PriceNotAvailable:
             return Decimal("0")
         return utils.quantize_aud(event.fee_sol * price)
@@ -201,7 +203,10 @@ class AccountingEngine:
         context = dict(event.raw)
         context.setdefault("mint", token.mint)
         try:
-            return self.price_provider.price_aud(token.mint, event.ts, context=context)
+            price = self.price_provider.price_aud(token.mint, event.ts, context=context)
+            if price is None:
+                raise PriceNotAvailable(f"Price not available for {token.mint}")
+            return price
         except PriceNotAvailable as exc:
             hint_key = "price_aud"
             if hint_key in event.raw:

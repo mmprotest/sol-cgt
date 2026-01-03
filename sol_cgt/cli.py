@@ -115,6 +115,8 @@ def _apply_api_keys_to_env(settings) -> None:
         os.environ.setdefault("BIRDEYE_API_KEY", settings.api_keys.birdeye)
     if settings.api_keys.jupiter:
         os.environ.setdefault("JUP_API_KEY", settings.api_keys.jupiter)
+    if settings.api_keys.coingecko:
+        os.environ.setdefault("COINGECKO_API_KEY", settings.api_keys.coingecko)
 
 
 def _dependency_versions(packages: list[str]) -> dict[str, str]:
@@ -267,11 +269,13 @@ def compute(
         price_provider = AudPriceProvider(
             api_key=settings.api_keys.birdeye,
             jupiter_api_key=settings.api_keys.jupiter,
+            coingecko_api_key=settings.api_keys.coingecko,
             fx_source=settings.fx_source,
         )
     else:
         price_provider = AudPriceProvider(
             jupiter_api_key=settings.api_keys.jupiter,
+            coingecko_api_key=settings.api_keys.coingecko,
             fx_source=settings.fx_source,
         )
     if dry_run:
@@ -318,6 +322,9 @@ def compute(
         for event in events:
             if event.fee_sol and "fee_aud" not in event.raw:
                 fee_price = price_provider.price_aud("SOL", event.ts, context=event.raw)
+                if fee_price is None:
+                    logger.warning("Missing SOL fee price for %s at %s", event.id, event.ts.isoformat())
+                    continue
                 event.raw["fee_aud"] = str(utils.quantize_aud(event.fee_sol * fee_price))
         fees_total = sum((d.fees_aud for d in disposals), Decimal("0")) + sum(
             (m.fee_aud for m in lot_moves), Decimal("0")

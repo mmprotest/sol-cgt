@@ -88,6 +88,7 @@ class AccountingEngine:
         matches = list(transfer_matches or [])
         match_by_out = {match.out_event.id: match for match in matches}
         matched_in_ids = {match.in_event.id for match in matches}
+        swap_hint_warned: set[str] = set()
 
         for event in sorted(events, key=lambda ev: (ev.ts, ev.id)):
             if event.id in matched_in_ids:
@@ -99,7 +100,14 @@ class AccountingEngine:
                 continue
             if event.kind == "transfer_out" and event.base_token is not None:
                 if not event.counterparty or event.counterparty not in wallet_set:
-                    self._handle_out_of_scope_transfer(event, warnings, external_lot_tracking)
+                    move_record, moved_lots = self._handle_out_of_scope_transfer(
+                        event,
+                        warnings,
+                        external_lot_tracking,
+                    )
+                    if move_record is not None:
+                        lot_moves.append(move_record)
+                    acquisitions.extend(moved_lots)
                     continue
             if event.kind == "transfer_in" and event.quote_token is not None:
                 if not event.counterparty or event.counterparty not in wallet_set:
@@ -116,9 +124,25 @@ class AccountingEngine:
                             signature=event.raw.get("signature"),
                             code="external_transfer_in",
                             message=(
-                                "Transfer in from external wallet treated as acquisition at spot price. "
+                                "Transfer in from external wallet treated as acquisition at spot price."
+                                if external_lot_tracking
+                                else "Transfer in from external wallet treated as acquisition at spot price. "
                                 "Enable external_lot_tracking to attempt matching."
                             ),
+                        )
+                    )
+            if event.kind == "swap":
+                signature = event.raw.get("signature")
+                if signature and event.raw.get("swap_hint_missing") and signature not in swap_hint_warned:
+                    swap_hint_warned.add(signature)
+                    missing = event.raw.get("swap_hint_missing")
+                    warnings.append(
+                        WarningRecord(
+                            ts=event.ts,
+                            wallet=event.wallet,
+                            signature=signature,
+                            code="swap_hint_missing_prices",
+                            message=f"Swap pricing hints missing for mints: {missing}",
                         )
                     )
 
@@ -174,6 +198,8 @@ class AccountingEngine:
     ) -> Decimal:
         if "proceeds_aud" in event.raw:
             return Decimal(str(event.raw["proceeds_aud"]))
+        if "proceeds_hint_aud" in event.raw:
+            return Decimal(str(event.raw["proceeds_hint_aud"]))
         if quote is not None:
             price = self._resolve_price(event, quote)
             return utils.quantize_aud(price * quote.amount)
@@ -242,6 +268,8 @@ class AccountingEngine:
             raise ValueError("Acquisition quantity must be positive")
         if "cost_aud" in event.raw:
             total_cost = Decimal(str(event.raw["cost_aud"]))
+        elif "cost_hint_aud" in event.raw:
+            total_cost = Decimal(str(event.raw["cost_hint_aud"]))
         elif proceeds_hint is not None:
             total_cost = proceeds_hint
         else:
@@ -282,13 +310,21 @@ class AccountingEngine:
             "FIFO",
             event_id=out_event.id,
         )
+        move_fee_allocations = allocate_fee_over_consumed_parts(
+            [(lot, qty_used) for lot, qty_used in allocation],
+            fee_aud,
+        )
         lots_consumed: List[dict[str, str]] = []
         lots_created: List[dict[str, str]] = []
         moved_lots: List[AcquisitionLot] = []
-        for lot, qty_used in allocation:
+        for (lot, qty_used), allocated_move_fee in zip(allocation, move_fee_allocations):
+            remaining_qty = lot.remaining_qty if lot.remaining_qty else lot.qty_acquired
+            portion = qty_used / remaining_qty if remaining_qty else Decimal("0")
+            moved_fees = lot.fees_aud * portion
+            lot.fees_aud = (lot.fees_aud - moved_fees)
+            if lot.fees_aud < Decimal("0"):
+                lot.fees_aud = Decimal("0")
             self.ledger.update_remaining(lot, qty_used)
-            portion = qty_used / lot.qty_acquired if lot.qty_acquired else Decimal("0")
-            moved_fees = utils.quantize_aud(lot.fees_aud * portion)
             new_lot = AcquisitionLot(
                 lot_id=f"{lot.lot_id}:move:{out_event.id}",
                 wallet=in_event.wallet,
@@ -297,7 +333,7 @@ class AccountingEngine:
                 token_symbol=lot.token_symbol,
                 qty_acquired=qty_used,
                 unit_cost_aud=lot.unit_cost_aud,
-                fees_aud=moved_fees,
+                fees_aud=moved_fees + allocated_move_fee,
                 remaining_qty=qty_used,
                 source_event=out_event.id,
                 source_type="lot_move",
@@ -325,10 +361,10 @@ class AccountingEngine:
         event: NormalizedEvent,
         warnings: List[WarningRecord],
         external_lot_tracking: bool,
-    ) -> None:
+    ) -> tuple[Optional[LotMoveRecord], List[AcquisitionLot]]:
         token = event.base_token
         if token is None:
-            return
+            return None, []
         try:
             allocation = methods.allocate(
                 self.ledger.lots_for(event.wallet, token.mint),
@@ -346,12 +382,23 @@ class AccountingEngine:
                     message=str(exc),
                 )
             )
-            return
-        external_wallet = f"external:{event.wallet}"
-        for lot, qty_used in allocation:
+            return None, []
+        external_wallet = self._external_wallet_id(event.counterparty)
+        move_fee_allocations = allocate_fee_over_consumed_parts(
+            [(lot, qty_used) for lot, qty_used in allocation],
+            self._fee_to_aud(event),
+        )
+        lots_consumed: List[dict[str, str]] = []
+        lots_created: List[dict[str, str]] = []
+        moved_lots: List[AcquisitionLot] = []
+        for (lot, qty_used), allocated_move_fee in zip(allocation, move_fee_allocations):
+            remaining_qty = lot.remaining_qty if lot.remaining_qty else lot.qty_acquired
+            portion = qty_used / remaining_qty if remaining_qty else Decimal("0")
+            moved_fees = lot.fees_aud * portion
+            lot.fees_aud = (lot.fees_aud - moved_fees)
+            if lot.fees_aud < Decimal("0"):
+                lot.fees_aud = Decimal("0")
             self.ledger.update_remaining(lot, qty_used)
-            portion = qty_used / lot.qty_acquired if lot.qty_acquired else Decimal("0")
-            moved_fees = utils.quantize_aud(lot.fees_aud * portion)
             new_lot = AcquisitionLot(
                 lot_id=f"{lot.lot_id}:external:{event.id}",
                 wallet=external_wallet,
@@ -360,12 +407,15 @@ class AccountingEngine:
                 token_symbol=lot.token_symbol,
                 qty_acquired=qty_used,
                 unit_cost_aud=lot.unit_cost_aud,
-                fees_aud=moved_fees,
+                fees_aud=moved_fees + allocated_move_fee,
                 remaining_qty=qty_used,
                 source_event=event.id,
                 source_type="external_move",
             )
             self.ledger.add_lot(new_lot)
+            moved_lots.append(new_lot)
+            lots_consumed.append({"lot_id": lot.lot_id, "qty": str(qty_used)})
+            lots_created.append({"lot_id": new_lot.lot_id, "qty": str(qty_used)})
         warnings.append(
             WarningRecord(
                 ts=event.ts,
@@ -378,6 +428,19 @@ class AccountingEngine:
                 ),
             )
         )
+        move = LotMoveRecord(
+            tx_signature=event.raw.get("signature") or event.id.split("#")[0],
+            ts=event.ts,
+            src_wallet=event.wallet,
+            dst_wallet=external_wallet,
+            mint=token.mint,
+            symbol=token.symbol,
+            amount=token.amount,
+            fee_aud=self._fee_to_aud(event),
+            lots_consumed=lots_consumed,
+            lots_created=lots_created,
+        )
+        return move, moved_lots
 
     def _handle_external_return(
         self,
@@ -388,7 +451,7 @@ class AccountingEngine:
         token = event.quote_token
         if token is None:
             return False, []
-        external_wallet = f"external:{event.wallet}"
+        external_wallet = self._external_wallet_id(event.counterparty)
         available = self.ledger.lots_for(external_wallet, token.mint)
         if not available:
             return False, []
@@ -399,10 +462,18 @@ class AccountingEngine:
         lots_consumed: List[dict[str, str]] = []
         lots_created: List[dict[str, str]] = []
         moved_lots: List[AcquisitionLot] = []
-        for lot, qty_used in allocation:
+        move_fee_allocations = allocate_fee_over_consumed_parts(
+            [(lot, qty_used) for lot, qty_used in allocation],
+            self._fee_to_aud(event),
+        )
+        for (lot, qty_used), allocated_move_fee in zip(allocation, move_fee_allocations):
+            remaining_qty = lot.remaining_qty if lot.remaining_qty else lot.qty_acquired
+            portion = qty_used / remaining_qty if remaining_qty else Decimal("0")
+            moved_fees = lot.fees_aud * portion
+            lot.fees_aud = (lot.fees_aud - moved_fees)
+            if lot.fees_aud < Decimal("0"):
+                lot.fees_aud = Decimal("0")
             self.ledger.update_remaining(lot, qty_used)
-            portion = qty_used / lot.qty_acquired if lot.qty_acquired else Decimal("0")
-            moved_fees = utils.quantize_aud(lot.fees_aud * portion)
             new_lot = AcquisitionLot(
                 lot_id=f"{lot.lot_id}:return:{event.id}",
                 wallet=event.wallet,
@@ -411,7 +482,7 @@ class AccountingEngine:
                 token_symbol=lot.token_symbol,
                 qty_acquired=qty_used,
                 unit_cost_aud=lot.unit_cost_aud,
-                fees_aud=moved_fees,
+                fees_aud=moved_fees + allocated_move_fee,
                 remaining_qty=qty_used,
                 source_event=event.id,
                 source_type="external_return",
@@ -444,3 +515,27 @@ class AccountingEngine:
             )
         )
         return True, moved_lots
+
+    def _external_wallet_id(self, counterparty: Optional[str]) -> str:
+        address = counterparty or "unknown"
+        return f"__external__:{address}"
+
+
+def allocate_fee_over_consumed_parts(
+    consumed_parts: List[tuple[AcquisitionLot, Decimal]],
+    fee_aud: Decimal,
+) -> List[Decimal]:
+    if not consumed_parts:
+        return []
+    total_qty = sum((qty for _, qty in consumed_parts), Decimal("0"))
+    if fee_aud == 0 or total_qty == 0:
+        return [Decimal("0") for _ in consumed_parts]
+    allocations: List[Decimal] = []
+    running_total = Decimal("0")
+    for lot, qty in consumed_parts[:-1]:
+        portion = qty / total_qty
+        allocated = fee_aud * portion
+        allocations.append(allocated)
+        running_total += allocated
+    allocations.append(fee_aud - running_total)
+    return allocations

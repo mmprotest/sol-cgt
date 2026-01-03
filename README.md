@@ -95,7 +95,7 @@ poetry run solcgt compute \
 Use `--dry-run` to normalize without accounting.
 
 Config flags:
-- `external_lot_tracking`: attempt to match transfers returning from external wallets (default false).
+- `external_lot_tracking`: attempt to match transfers returning from external wallets (default true).
 - `fx_source`: `frankfurter` (default) or `rba`.
 
 ## Migration notes

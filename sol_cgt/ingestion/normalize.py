@@ -18,6 +18,7 @@ SOL_MINT = "SOL"
 class SwapLeg:
     token: TokenAmount
     direction: str  # "in" or "out"
+    price_aud: Optional[Decimal] = None
 
 
 def _lamports_to_sol(value: int | float | Decimal) -> Decimal:
@@ -140,6 +141,14 @@ def _swap_token_payload(entry: dict) -> dict:
     return payload
 
 
+def _extract_price_aud(entry: dict) -> Optional[Decimal]:
+    for key in ("price_aud", "priceAud", "audPrice", "priceAUD"):
+        value = entry.get(key)
+        if value is not None:
+            return Decimal(str(value))
+    return None
+
+
 def _native_amount_payload(entry: dict) -> dict:
     amount = entry.get("amount") or entry.get("lamports")
     return {
@@ -162,14 +171,26 @@ async def _build_swap_legs(
             metadata_cache=metadata_cache,
         )
         if token is not None and token.amount > 0:
-            legs.append(SwapLeg(token=token, direction="out"))
+            legs.append(
+                SwapLeg(
+                    token=token,
+                    direction="out",
+                    price_aud=_extract_price_aud(entry),
+                )
+            )
     for entry in swap_event.get("tokenOutputs") or []:
         token = await _build_token_amount(
             _swap_token_payload(entry),
             metadata_cache=metadata_cache,
         )
         if token is not None and token.amount > 0:
-            legs.append(SwapLeg(token=token, direction="in"))
+            legs.append(
+                SwapLeg(
+                    token=token,
+                    direction="in",
+                    price_aud=_extract_price_aud(entry),
+                )
+            )
     native_input = swap_event.get("nativeInput")
     if native_input:
         token = await _build_token_amount(
@@ -177,7 +198,7 @@ async def _build_swap_legs(
             metadata_cache=metadata_cache,
         )
         if token is not None and token.amount > 0:
-            legs.append(SwapLeg(token=token, direction="out"))
+            legs.append(SwapLeg(token=token, direction="out", price_aud=None))
     native_output = swap_event.get("nativeOutput")
     if native_output:
         token = await _build_token_amount(
@@ -185,7 +206,7 @@ async def _build_swap_legs(
             metadata_cache=metadata_cache,
         )
         if token is not None and token.amount > 0:
-            legs.append(SwapLeg(token=token, direction="in"))
+            legs.append(SwapLeg(token=token, direction="in", price_aud=None))
     return legs
 
 
@@ -215,6 +236,10 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
             legs = await _build_swap_legs(swap_event, metadata_cache=metadata_cache)
             deltas: dict[str, Decimal] = {}
             meta: dict[str, tuple[Optional[str], Optional[int]]] = {}
+            values_in: dict[str, Decimal] = {}
+            values_out: dict[str, Decimal] = {}
+            missing_in_prices: set[str] = set()
+            missing_out_prices: set[str] = set()
             for leg in legs:
                 mint = leg.token.mint
                 amount = leg.token.amount or Decimal("0")
@@ -224,6 +249,39 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                 deltas[mint] = deltas.get(mint, Decimal("0")) + delta
                 key = (mint, leg.direction)
                 swap_legs.setdefault(key, []).append(amount)
+                if leg.price_aud is None:
+                    if leg.direction == "in":
+                        missing_in_prices.add(mint)
+                    else:
+                        missing_out_prices.add(mint)
+                else:
+                    value = amount * leg.price_aud
+                    if leg.direction == "in":
+                        values_in[mint] = values_in.get(mint, Decimal("0")) + value
+                    else:
+                        values_out[mint] = values_out.get(mint, Decimal("0")) + value
+
+            total_in_aud = sum(values_in.values(), Decimal("0")) if not missing_in_prices else None
+            total_out_aud = sum(values_out.values(), Decimal("0")) if not missing_out_prices else None
+            proceeds_hint_by_mint: dict[str, Decimal] = {}
+            cost_hint_by_mint: dict[str, Decimal] = {}
+            if total_in_aud is not None and values_out:
+                total_out_value = sum(values_out.values(), Decimal("0"))
+                if len(values_out) == 1:
+                    only_mint = next(iter(values_out.keys()))
+                    proceeds_hint_by_mint[only_mint] = total_in_aud
+                elif total_out_value > 0:
+                    for mint, value in values_out.items():
+                        proceeds_hint_by_mint[mint] = total_in_aud * (value / total_out_value)
+            if total_out_aud is not None and values_in:
+                total_in_value = sum(values_in.values(), Decimal("0"))
+                if len(values_in) == 1:
+                    only_mint = next(iter(values_in.keys()))
+                    cost_hint_by_mint[only_mint] = total_out_aud
+                elif total_in_value > 0:
+                    for mint, value in values_in.items():
+                        cost_hint_by_mint[mint] = total_out_aud * (value / total_in_value)
+            hint_missing = sorted(missing_in_prices.union(missing_out_prices))
 
             for idx, mint in enumerate(sorted(deltas.keys())):
                 net = deltas[mint]
@@ -256,10 +314,15 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                             "source": "helius_swap",
                             "swap_direction": "out" if is_out else "in",
                             "swap_net_delta": str(net),
+                            **({"swap_hint_missing": hint_missing} if hint_missing else {}),
                         },
                         tags=set(),
                     )
                 )
+                if is_out and mint in proceeds_hint_by_mint:
+                    tx_events[-1].raw["proceeds_hint_aud"] = str(proceeds_hint_by_mint[mint])
+                if (not is_out) and mint in cost_hint_by_mint:
+                    tx_events[-1].raw["cost_hint_aud"] = str(cost_hint_by_mint[mint])
 
         for idx, transfer in enumerate(tx.get("tokenTransfers") or []):
             matches, direction = _transfer_matches_wallet(transfer, wallet)
@@ -294,6 +357,8 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                         "transfer": transfer,
                         "signature": signature,
                         "source": "helius_token_transfer",
+                        "source_wallet": transfer.get("fromUserAccount") or transfer.get("source"),
+                        "destination_wallet": transfer.get("toUserAccount") or transfer.get("destination"),
                     },
                     tags=set(),
                 )
@@ -326,6 +391,8 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                         "native_transfer": transfer,
                         "signature": signature,
                         "source": "helius_native_transfer",
+                        "source_wallet": transfer.get("fromUserAccount") or transfer.get("source"),
+                        "destination_wallet": transfer.get("toUserAccount") or transfer.get("destination"),
                     },
                     tags=set(),
                 )

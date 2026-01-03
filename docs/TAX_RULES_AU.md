@@ -24,17 +24,31 @@ not tax advice.
   - unit cost in AUD
   - remaining quantity
 - A lot-move audit record is created for reporting.
+- Network fees on self-transfers are allocated across the moved lots, increasing cost base
+  without changing acquisition time.
 
 ### Transfers to/from external wallets (out of scope)
 - **Outgoing transfers** to wallets outside the provided set are treated as out-of-scope moves.
-  Lots are moved to an external bucket and a warning is emitted.
+  Lots are moved to an external bucket (`__external__:<counterparty_or_unknown>`) and a warning is emitted.
+  Network fees on the move are allocated across the moved lots so cost base is preserved if/when
+  the lots return.
 - **Incoming transfers** from external wallets are treated as new acquisitions at FMV **unless**
   external tracking is enabled (optional) and lots can be matched.
+  When matched, lots are moved back in with original acquisition timestamps, unit cost, and
+  attached fees.
 
 ### Fee attribution
 - Network fees are applied **only** to the fee payer.
 - Fees reduce proceeds for disposals and increase cost base for acquisitions.
-- Self-transfer fees are tracked in the lot-move audit log and are not treated as taxable events.
+- Self-transfer and out-of-scope move fees are attached to the moved lots and tracked in the
+  lot-move audit log; they are not treated as taxable disposals.
+
+### Swap valuation hints
+- Swap normalization derives proceeds and cost hints when price data is available in the swap
+  payload. Outgoing disposal legs use the incoming consideration value, allocated proportionally
+  across outgoing mints, and incoming acquisition legs use the outgoing value similarly.
+- If price data is missing for some swap mints, the engine falls back to spot pricing and emits
+  a warning.
 
 ### CGT discount eligibility
 - Disposals held for **≥ 12 months** are flagged as discount-eligible.

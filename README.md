@@ -4,7 +4,7 @@
 token trading with an emphasis on auditability and Australian tax reporting.
 The project ingests transactions via the Helius Enhanced API, normalises them
 into a canonical event model, performs lot based cost base tracking and emits
-CSV/Parquet/XLSX reports as well as pretty console summaries.
+CSV/XLSX reports with optional Parquet export and rich console summaries.
 
 ## Quick start
 
@@ -27,8 +27,10 @@ If you're new to Python tooling, follow these steps exactly.
    python -m venv .venv
    . .venv/bin/activate
    python -m pip install -U pip
-   python -m pip install -r requirements.txt
    python -m pip install -e .
+   # Optional extras:
+   # python -m pip install -e ".[parquet]"
+   # python -m pip install -e ".[pretty]"
    ```
 
    On Windows PowerShell, activate with:
@@ -71,7 +73,7 @@ If you're new to Python tooling, follow these steps exactly.
      --xlsx out.xlsx
    ```
 
-   This runs the entire pipeline (normalisation → reconciliation → accounting → reporting). Reports are written to `./reports/<wallet_or_combined>/<financial_year>/` in CSV/Parquet format (use `--format csv|parquet|both`), and the XLSX is written to the path you pass via `--xlsx`. The console also prints rich tables summarising gains/losses and any items needing attention. You can also scope the output with `--fy-start`/`--fy-end` instead of `--fy`.
+   This runs the entire pipeline (normalisation → reconciliation → accounting → reporting). Reports are written to `./reports/<wallet_or_combined>/<financial_year>/` in CSV format by default (use `--format parquet|both` with the optional `parquet` extra), and the XLSX is written to the path you pass via `--xlsx`. The console prints rich tables if the optional `pretty` extra is installed, otherwise it falls back to plain text. You can also scope the output with `--fy-start`/`--fy-end` instead of `--fy`.
 
 Need a reminder of the available options? Use:
 
@@ -85,7 +87,7 @@ solcgt report --help
 - Multi-wallet aggregation with self-transfer reconciliation.
 - Deterministic lot matching using FIFO/LIFO/HIFO/Specific ID.
 - Cached price and FX lookups to avoid repeated API calls (CoinGecko for SOL, Jupiter for tokens, optional Birdeye, FX via frankfurter.app with an RBA fallback).
-- Structured CSV/Parquet/XLSX exports and console summaries via `rich`.
+- Structured CSV/XLSX exports by default, with Parquet and rich console summaries available via extras.
 
 ## CLI examples
 
@@ -115,7 +117,7 @@ Config flags:
 Tests can be executed with:
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python -m pip install -e ".[dev]"
 pytest
 ```
 

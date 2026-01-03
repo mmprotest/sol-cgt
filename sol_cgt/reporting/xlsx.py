@@ -4,8 +4,6 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 from typing import Iterable, Sequence
-
-import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
@@ -13,6 +11,7 @@ from openpyxl.utils import get_column_letter
 from .. import utils
 from ..pricing import AudPriceProvider
 from ..types import AcquisitionLot, DisposalRecord, LotMoveRecord, NormalizedEvent, WarningRecord
+from .schema import SUMMARY_BY_TOKEN_COLUMNS, WALLET_SUMMARY_COLUMNS
 
 
 def _apply_header_style(sheet) -> None:
@@ -167,8 +166,8 @@ def export_xlsx(
     events: Sequence[NormalizedEvent],
     lots: Sequence[AcquisitionLot],
     disposals: Sequence[DisposalRecord],
-    summary_by_token: pd.DataFrame,
-    wallet_summary: pd.DataFrame,
+    summary_by_token: Sequence[dict[str, object]],
+    wallet_summary: Sequence[dict[str, object]],
     lot_moves: Sequence[LotMoveRecord],
     warnings: Sequence[WarningRecord],
     price_provider: AudPriceProvider,
@@ -218,18 +217,18 @@ def export_xlsx(
         _auto_width(disposals_sheet)
 
     summary_token_sheet = workbook.create_sheet("Summary by token")
-    if not summary_by_token.empty:
-        summary_token_sheet.append(list(summary_by_token.columns))
-        for _, row in summary_by_token.iterrows():
-            summary_token_sheet.append(list(row.values))
+    if summary_by_token:
+        summary_token_sheet.append(SUMMARY_BY_TOKEN_COLUMNS)
+        for row in summary_by_token:
+            summary_token_sheet.append([row.get(col) for col in SUMMARY_BY_TOKEN_COLUMNS])
         _apply_header_style(summary_token_sheet)
         _auto_width(summary_token_sheet)
 
     wallet_sheet = workbook.create_sheet("Wallet summary")
-    if not wallet_summary.empty:
-        wallet_sheet.append(list(wallet_summary.columns))
-        for _, row in wallet_summary.iterrows():
-            wallet_sheet.append(list(row.values))
+    if wallet_summary:
+        wallet_sheet.append(WALLET_SUMMARY_COLUMNS)
+        for row in wallet_summary:
+            wallet_sheet.append([row.get(col) for col in WALLET_SUMMARY_COLUMNS])
         _apply_header_style(wallet_sheet)
         _auto_width(wallet_sheet)
 
@@ -246,7 +245,13 @@ def export_xlsx(
     if warnings:
         warnings_sheet.append(list(warnings[0].model_dump().keys()))
         for warning in warnings:
-            warnings_sheet.append(list(warning.model_dump().values()))
+            row = []
+            for value in warning.model_dump().values():
+                if hasattr(value, "isoformat"):
+                    row.append(value.isoformat())
+                else:
+                    row.append(value)
+            warnings_sheet.append(row)
         _apply_header_style(warnings_sheet)
         _auto_width(warnings_sheet)
 

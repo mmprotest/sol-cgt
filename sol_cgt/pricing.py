@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import threading
 from datetime import datetime
 from decimal import Decimal
@@ -9,12 +11,14 @@ from functools import lru_cache
 from typing import Optional
 
 from . import utils
-from .providers import birdeye, coingecko, fx_rates, jupiter, rba_fx
+from .providers import birdeye, coingecko, fx_rates, jupiter, kraken, rba_fx
+from .accounting.engine import PriceNotAvailable
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 STABLECOIN_MINTS = {USDC_MINT, USDT_MINT}
+LOGGER = logging.getLogger(__name__)
 
 
 class AudPriceProvider:
@@ -23,13 +27,15 @@ class AudPriceProvider:
         *,
         api_key: Optional[str] = None,
         jupiter_api_key: Optional[str] = None,
+        coingecko_api_key: Optional[str] = None,
         fx_source: str = "frankfurter",
     ) -> None:
         self.api_key = api_key
         self.jupiter_api_key = jupiter_api_key
+        self.coingecko_api_key = coingecko_api_key or os.getenv("COINGECKO_API_KEY")
         self.fx_source = fx_source
 
-    def price_aud(self, mint: str, ts: datetime, *, context: Optional[dict] = None) -> Decimal:
+    def price_aud(self, mint: str, ts: datetime, *, context: Optional[dict] = None) -> Optional[Decimal]:
         context = context or {}
         hints = context.get("price_aud")
         if isinstance(hints, dict) and mint in hints:
@@ -50,21 +56,40 @@ class AudPriceProvider:
         return mint
 
     @lru_cache(maxsize=4096)
-    def _cached_price(self, mint: str, bucket: datetime) -> Decimal:
+    def _cached_price(self, mint: str, bucket: datetime) -> Optional[Decimal]:
         return self._price_aud_uncached(mint, bucket)
 
-    def _price_aud_uncached(self, mint: str, ts: datetime) -> Decimal:
+    def _price_aud_uncached(self, mint: str, ts: datetime) -> Optional[Decimal]:
         usd_price = self._price_usd(mint, ts)
+        if usd_price is None:
+            LOGGER.warning("Price not available for mint=%s at %s", mint, ts.isoformat())
+            return None
         fx = self._fx_rate(ts)
         return utils.quantize_aud(usd_price * fx)
 
-    def _price_usd(self, mint: str, ts: datetime) -> Decimal:
+    def _price_usd(self, mint: str, ts: datetime) -> Optional[Decimal]:
         if mint in STABLECOIN_MINTS:
             return Decimal("1")
         if mint == WSOL_MINT:
-            price = self._run_async(coingecko.sol_price_usd(ts))
+            if self.api_key:
+                try:
+                    price = self._run_async(birdeye.historical_price_usd(mint, ts, api_key=self.api_key))
+                except Exception:
+                    price = None
+                if price is not None:
+                    return price
+            date_local = utils.to_au_local(ts).date()
+            price = self._run_async(kraken.get_sol_usd_close_for_date(date_local))
             if price is not None:
                 return price
+            if self.coingecko_api_key:
+                try:
+                    price = self._run_async(coingecko.sol_price_usd(ts, api_key=self.coingecko_api_key))
+                except coingecko.ProviderUnavailable:
+                    price = None
+                if price is not None:
+                    return price
+            return None
         try:
             price = self._run_async(jupiter.price_usd(mint, ts, api_key=self.jupiter_api_key))
             if price is not None:
@@ -76,7 +101,7 @@ class AudPriceProvider:
                 return self._run_async(birdeye.historical_price_usd(mint, ts, api_key=self.api_key))
             except Exception:
                 pass
-        raise birdeye.PriceLookupError(mint, ts, message="Price not available from available sources")
+        raise PriceNotAvailable(f"Price not available for {mint} at {ts.isoformat()}")
 
     def _fx_rate(self, ts: datetime) -> Decimal:
         fx_day = utils.to_au_local(ts).date()

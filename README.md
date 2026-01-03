@@ -45,7 +45,7 @@ If you're new to Python tooling, follow these steps exactly.
    cp .env.example .env
    ```
 
-   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (`HELIUS_API_KEY`, required for `fetch`). If you also add a [Birdeye](https://birdeye.so/) key (`BIRDEYE_API_KEY`) the tool can source token prices and token metadata from Birdeye (metadata endpoint: `/defi/v3/token/meta-data/single`). You can optionally add a Jupiter API key (`JUP_API_KEY`) to unlock the Jupiter v3 price API and the v2 token search endpoint. Don't have a Birdeye or Jupiter key? No problem — the app uses free price and metadata sources by default, and falls back to on-chain mint metadata when needed.
+   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (`HELIUS_API_KEY`, required for `fetch`). If you also add a [Birdeye](https://birdeye.so/) key (`BIRDEYE_API_KEY`) the tool can source token prices and token metadata from Birdeye (metadata endpoint: `/defi/v3/token/meta-data/single`). You can optionally add a Jupiter API key (`JUP_API_KEY`) to unlock the Jupiter v3 price API and the v2 token search endpoint. A CoinGecko key (`COINGECKO_API_KEY`) is optional and only used as a SOL pricing fallback. Don't have a Birdeye or Jupiter key? No problem — the app uses free price and metadata sources by default, and falls back to on-chain mint metadata when needed.
 
 5. **(Optional) Create a config file**
 
@@ -86,7 +86,7 @@ solcgt report --help
 
 - Multi-wallet aggregation with self-transfer reconciliation.
 - Deterministic lot matching using FIFO/LIFO/HIFO/Specific ID.
-- Cached price and FX lookups to avoid repeated API calls (CoinGecko for SOL, Jupiter for tokens, optional Birdeye for price/metadata, FX via frankfurter.app with an RBA fallback). On-chain mint metadata lookups use `HELIUS_RPC_URL` when set, otherwise they fall back to the public Solana RPC.
+- Cached price and FX lookups to avoid repeated API calls (Kraken daily OHLC for SOL, Jupiter for tokens, optional Birdeye for price/metadata, optional CoinGecko with key, FX via frankfurter.app with an RBA fallback). On-chain mint metadata lookups use `HELIUS_RPC_URL` when set, otherwise they fall back to the public Solana RPC.
 - Structured CSV/XLSX exports by default, with Parquet and rich console summaries available via extras.
 
 ## CLI examples

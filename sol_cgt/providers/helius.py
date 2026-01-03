@@ -100,7 +100,8 @@ async def fetch_txs(
     api_key = api_key or os.getenv("HELIUS_API_KEY")
     if not api_key:
         raise RuntimeError("HELIUS_API_KEY is required to fetch transactions")
-    base_url = base_url or os.getenv("HELIUS_BASE_URL", DEFAULT_BASE_URL)
+    base_url = base_url or os.getenv("HELIUS_ENHANCED_BASE_URL", DEFAULT_BASE_URL)
+    utils.validate_helius_enhanced_base_url(base_url)
     url = f"{base_url}/v0/addresses/{wallet}/transactions"
     limit = max(1, min(limit, HELIUS_TX_LIMIT_MAX))
     params: dict[str, Any] = {"api-key": api_key, "limit": limit, "sort-order": sort_order}

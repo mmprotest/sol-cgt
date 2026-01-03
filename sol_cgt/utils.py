@@ -7,7 +7,8 @@ from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Optional, Sequence
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from zoneinfo import ZoneInfo
 
 try:  # pragma: no cover - optional dependency for speed
@@ -18,6 +19,7 @@ except Exception:  # pragma: no cover - fallback during tests
 
 CACHE_ROOT = Path("./cache")
 AU_TZ = ZoneInfo("Australia/Melbourne")
+HELIUS_RPC_ENHANCED_HOSTS = ("api-mainnet.helius-rpc.com", "api-devnet.helius-rpc.com")
 
 
 def ensure_cache_dir(*parts: str) -> Path:
@@ -108,6 +110,45 @@ def quantize_aud(value: Decimal) -> Decimal:
 def chunked(seq: Sequence[Any], size: int) -> Iterator[Sequence[Any]]:
     for idx in range(0, len(seq), size):
         yield seq[idx : idx + size]
+
+
+def validate_helius_rpc_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return url
+    if any(host in url for host in HELIUS_RPC_ENHANCED_HOSTS):
+        raise ValueError(
+            "HELIUS_RPC_URL must be mainnet.helius-rpc.com (JSON-RPC). api-mainnet.helius-rpc.com is Enhanced REST."
+        )
+    return url
+
+
+def validate_helius_enhanced_base_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return url
+    if "mainnet.helius-rpc.com/?api-key=" in url:
+        raise ValueError(
+            "HELIUS_ENHANCED_BASE_URL must be api-mainnet.helius-rpc.com (Enhanced REST). "
+            "mainnet.helius-rpc.com/?api-key= is JSON-RPC."
+        )
+    return url
+
+
+def redact_api_key(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if not parsed.query:
+        return url
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    if not query_pairs:
+        return url
+    redacted_pairs = [
+        (key, "REDACTED" if key.lower() == "api-key" else value)
+        for key, value in query_pairs
+    ]
+    redacted_query = urlencode(redacted_pairs, doseq=True)
+    return urlunparse(parsed._replace(query=redacted_query))
 
 
 def holding_period_days(acquired: datetime, disposed: datetime) -> int:

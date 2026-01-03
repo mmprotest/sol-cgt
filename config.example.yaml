@@ -12,3 +12,6 @@ apply_cgt_discount: false
 api_keys:
   helius: YOUR_KEY
   birdeye: YOUR_KEY
+helius_base_url: https://api-mainnet.helius-rpc.com
+helius_tx_limit: 100
+helius_max_pages: 100

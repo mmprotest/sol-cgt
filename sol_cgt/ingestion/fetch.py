@@ -19,12 +19,22 @@ async def fetch_wallet(
     wallet: str,
     *,
     before: Optional[str] = None,
-    limit: int = 1000,
+    limit: int = 100,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    fy_start_ts: Optional[int] = None,
+    max_pages: int = 100,
     append: bool = False,
 ) -> list[dict]:
-    txs = await helius.fetch_txs(wallet, before=before, limit=limit, api_key=api_key, base_url=base_url)
+    txs = await helius.fetch_txs(
+        wallet,
+        before=before,
+        limit=limit,
+        api_key=api_key,
+        base_url=base_url,
+        fy_start_ts=fy_start_ts,
+        max_pages=max_pages,
+    )
     if not txs:
         return []
     path = _wallet_cache_path(wallet)
@@ -36,9 +46,11 @@ async def fetch_many(
     wallets: Iterable[str],
     *,
     before: Optional[str] = None,
-    limit: int = 1000,
+    limit: int = 100,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    fy_start_ts: Optional[int] = None,
+    max_pages: int = 100,
     append: bool = False,
 ) -> dict[str, list[dict]]:
     results: dict[str, list[dict]] = {}
@@ -49,6 +61,8 @@ async def fetch_many(
             limit=limit,
             api_key=api_key,
             base_url=base_url,
+            fy_start_ts=fy_start_ts,
+            max_pages=max_pages,
             append=append,
         )
 

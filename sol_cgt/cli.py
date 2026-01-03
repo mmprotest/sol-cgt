@@ -3,8 +3,12 @@
 import asyncio
 import inspect
 import logging
+import os
+import shutil
+import sys
 from datetime import timezone
 from decimal import Decimal
+from importlib import metadata
 from pathlib import Path
 from typing import List, Optional
 
@@ -23,6 +27,8 @@ from .reporting import formats, summaries, xlsx
 from .types import NormalizedEvent
 from . import utils
 from .utils import australian_financial_year_bounds, parse_local_date
+from .providers import birdeye as birdeye_provider
+from .providers import jupiter as jupiter_provider
 
 _orig_option_init = typer.core.TyperOption.__init__
 logger = logging.getLogger(__name__)
@@ -39,6 +45,8 @@ def _patched_option_init(self: typer.core.TyperOption, **kwargs) -> None:
 typer.core.TyperOption.__init__ = _patched_option_init  # type: ignore[assignment]
 
 app = typer.Typer(help="Solana capital gains tooling")
+debug_app = typer.Typer(help="Debugging helpers")
+app.add_typer(debug_app, name="debug")
 
 if "ctx" in inspect.signature(click.Parameter.make_metavar).parameters:
     _orig_make_metavar = click.Parameter.make_metavar
@@ -79,6 +87,23 @@ def _summary_value(rows: list[dict[str, object]], key: str, default: object = 0)
     return default
 
 
+def _apply_api_keys_to_env(settings) -> None:
+    if settings.api_keys.birdeye:
+        os.environ.setdefault("BIRDEYE_API_KEY", settings.api_keys.birdeye)
+    if settings.api_keys.jupiter:
+        os.environ.setdefault("JUP_API_KEY", settings.api_keys.jupiter)
+
+
+def _dependency_versions(packages: list[str]) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for package in packages:
+        try:
+            versions[package] = metadata.version(package)
+        except metadata.PackageNotFoundError:
+            versions[package] = "not-installed"
+    return versions
+
+
 @app.command()
 def fetch(
     wallet: List[str] = typer.Option(None, "--wallet", "-w", help="Wallet address", show_default=False),
@@ -97,6 +122,7 @@ def fetch(
     parsed_wallets = _collect_wallets(wallet)
     overrides = {"wallets": parsed_wallets} if parsed_wallets else {}
     settings = load_settings(config, overrides)
+    _apply_api_keys_to_env(settings)
     wallets = settings.wallets
     if not wallets:
         raise typer.BadParameter("No wallets provided")
@@ -148,6 +174,7 @@ def compute(
     if method:
         overrides["method"] = method
     settings = load_settings(config, overrides)
+    _apply_api_keys_to_env(settings)
     wallets = settings.wallets
     if not wallets:
         raise typer.BadParameter("No wallets provided")
@@ -193,9 +220,16 @@ def compute(
         logger.info("Normalized event breakdown: none")
     matches = transfers.detect_self_transfers(events, wallets)
     if settings.api_keys.birdeye:
-        price_provider = AudPriceProvider(api_key=settings.api_keys.birdeye, fx_source=settings.fx_source)
+        price_provider = AudPriceProvider(
+            api_key=settings.api_keys.birdeye,
+            jupiter_api_key=settings.api_keys.jupiter,
+            fx_source=settings.fx_source,
+        )
     else:
-        price_provider = AudPriceProvider(fx_source=settings.fx_source)
+        price_provider = AudPriceProvider(
+            jupiter_api_key=settings.api_keys.jupiter,
+            fx_source=settings.fx_source,
+        )
     if dry_run:
         typer.echo(f"Loaded {len(events)} normalized events across {len(wallets)} wallet(s)")
         return
@@ -306,3 +340,29 @@ def audit(
     zero_cost = [ev for ev in events if ev.kind == "transfer_in" and (ev.quote_token and ev.quote_token.amount > 0) and ev.raw.get("cost_aud") is None]
     typer.echo(f"Loaded {len(events)} normalized events")
     typer.echo(f"Found {len(zero_cost)} transfer_in events without cost metadata")
+
+
+@debug_app.command("env")
+def debug_env() -> None:
+    """Print environment details for troubleshooting."""
+    executable = shutil.which("solcgt") or sys.argv[0]
+    typer.echo(f"solcgt executable: {executable}")
+    import sol_cgt  # imported here to avoid startup overhead
+
+    typer.echo(f"sol_cgt package: {sol_cgt.__file__}")
+    versions = _dependency_versions(
+        [
+            "sol-cgt",
+            "httpx",
+            "typer",
+            "pydantic",
+            "pydantic-settings",
+        ]
+    )
+    for name, version in versions.items():
+        typer.echo(f"{name} version: {version}")
+    typer.echo(f"Birdeye metadata URL: {birdeye_provider.METADATA_URL}")
+    typer.echo(f"Jupiter token v1 URL: {jupiter_provider.JUPITER_TOKENS_V1_URL}")
+    typer.echo(f"Jupiter token v2 URL: {jupiter_provider.JUPITER_TOKENS_V2_URL}")
+    typer.echo(f"Jupiter price base URL: {jupiter_provider._price_base_url(os.getenv('JUP_API_KEY'))}")
+    typer.echo(f"Jupiter RPC URL: {jupiter_provider._rpc_url()}")

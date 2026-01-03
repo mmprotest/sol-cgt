@@ -14,6 +14,7 @@ from tenacity import RetryError, retry, retry_if_exception, stop_after_attempt, 
 from .. import utils
 
 API_URL = "https://public-api.birdeye.so"
+METADATA_URL = f"{API_URL}/defi/v3/token/meta-data/single"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -131,7 +132,7 @@ async def token_metadata(mint: str, *, api_key: Optional[str] = None) -> Tuple[O
     api_key = api_key or os.getenv("BIRDEYE_API_KEY")
     if not api_key:
         return None, None
-    url = f"{API_URL}/defi/v3/token/meta-data/single"
+    url = METADATA_URL
     params = {"address": mint}
     try:
         payload = await _cached_request(url, params, _headers(api_key), allow_not_found=True)

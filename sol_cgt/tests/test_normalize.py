@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 
+import httpx
+
 from sol_cgt.ingestion import normalize
 from sol_cgt.pricing import USDC_MINT
 
@@ -118,3 +120,36 @@ def test_normalize_uses_jupiter_metadata_when_birdeye_fails(monkeypatch) -> None
     assert transfer_in.quote_token is not None
     assert transfer_in.quote_token.symbol == "TKC"
     assert transfer_in.quote_token.decimals == 8
+
+
+def test_normalize_metadata_failures_do_not_crash(monkeypatch) -> None:
+    async def failing_jupiter_metadata(mint: str):
+        raise httpx.ConnectError("down", request=httpx.Request("GET", "https://rpc"))
+
+    async def failing_birdeye_metadata(mint: str):
+        raise httpx.ConnectError("down", request=httpx.Request("GET", "https://birdeye"))
+
+    monkeypatch.setattr(normalize.jupiter, "token_metadata", failing_jupiter_metadata)
+    monkeypatch.setattr(normalize.birdeye, "token_metadata", failing_birdeye_metadata)
+
+    raw_tx = {
+        "signature": "sig3",
+        "timestamp": 1700000002,
+        "fee": 5000,
+        "tokenTransfers": [
+            {
+                "mint": "TOKEND",
+                "tokenAmount": "3.5",
+                "tokenDecimals": None,
+                "tokenSymbol": None,
+                "fromUserAccount": "OTHER",
+                "toUserAccount": "WALLET",
+            }
+        ],
+    }
+
+    events = asyncio.run(normalize.normalize_wallet_events("WALLET", [raw_tx]))
+    transfer_in = next(ev for ev in events if ev.kind == "transfer_in")
+    assert transfer_in.quote_token is not None
+    assert transfer_in.quote_token.decimals == 0
+    assert transfer_in.raw["decimals_defaulted_mints"] == ["TOKEND"]

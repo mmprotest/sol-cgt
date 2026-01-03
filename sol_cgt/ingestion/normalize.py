@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+import logging
 from typing import Iterable, List, Optional
 
 from .. import utils
@@ -12,6 +13,7 @@ from ..types import NormalizedEvent, TokenAmount
 
 LAMPORTS_PER_SOL = Decimal("1000000000")
 SOL_MINT = "SOL"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -36,9 +38,17 @@ async def _metadata_for_mint(
 ) -> tuple[Optional[str], Optional[int]]:
     if mint in cache:
         return cache[mint]
-    symbol, decimals = await jupiter.token_metadata(mint)
+    try:
+        symbol, decimals = await jupiter.token_metadata(mint)
+    except Exception as exc:  # pragma: no cover - defensive
+        LOGGER.warning("Jupiter metadata lookup failed for mint=%s: %s", mint, exc)
+        symbol, decimals = None, None
     if symbol is None and decimals is None:
-        symbol, decimals = await birdeye.token_metadata(mint)
+        try:
+            symbol, decimals = await birdeye.token_metadata(mint)
+        except Exception as exc:  # pragma: no cover - defensive
+            LOGGER.warning("Birdeye metadata lookup failed for mint=%s: %s", mint, exc)
+            symbol, decimals = None, None
     cache[mint] = (symbol, decimals)
     return symbol, decimals
 
@@ -65,11 +75,11 @@ async def _build_token_amount(
         meta_symbol, meta_decimals = await _metadata_for_mint(mint, metadata_cache)
         symbol = symbol or meta_symbol
         decimals = decimals if decimals is not None else meta_decimals
-    if amount_raw is None and amount is not None and decimals is not None:
-        amount_raw = _amount_raw_from_decimal(Decimal(str(amount)), int(decimals))
     if decimals is None:
         decimals = 0
         decimal_warning_mints.add(mint)
+    if amount_raw is None and amount is not None and decimals is not None:
+        amount_raw = _amount_raw_from_decimal(Decimal(str(amount)), int(decimals))
     if amount_raw is None:
         amount_raw = 0
     return TokenAmount(mint=mint, symbol=symbol, decimals=int(decimals), amount_raw=int(amount_raw))

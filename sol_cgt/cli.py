@@ -34,6 +34,18 @@ _orig_option_init = typer.core.TyperOption.__init__
 logger = logging.getLogger(__name__)
 
 
+def _configure_logging() -> None:
+    level_name = os.getenv("SOLCGT_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+    root_logger.setLevel(level)
+
+
 def _patched_option_init(self: typer.core.TyperOption, **kwargs) -> None:
     option_type = kwargs.get("type")
     if kwargs.get("is_flag") is None and option_type is not None and option_type is not bool:
@@ -119,6 +131,7 @@ def fetch(
 ) -> None:
     """Fetch raw transactions for the supplied wallets."""
 
+    _configure_logging()
     parsed_wallets = _collect_wallets(wallet)
     overrides = {"wallets": parsed_wallets} if parsed_wallets else {}
     settings = load_settings(config, overrides)
@@ -169,6 +182,7 @@ def compute(
         help="Fetch txs from Helius if cache is empty or missing",
     ),
 ) -> None:
+    _configure_logging()
     parsed_wallets = _collect_wallets(wallet)
     overrides = {"wallets": parsed_wallets} if parsed_wallets else {}
     if method:
@@ -317,6 +331,7 @@ def report(
     fmt: str = typer.Option("csv", "--format", help="Report format", show_default=True),
 ) -> None:
     """Backward-compatible alias for compute."""
+    _configure_logging()
     compute(wallet=wallet, config=config, outdir=outdir, method=method, fy=fy, fmt=fmt)
 
 
@@ -327,6 +342,7 @@ def audit(
 ) -> None:
     """Display information about cached data and unresolved lots."""
 
+    _configure_logging()
     parsed_wallets = _collect_wallets(wallet)
     overrides = {"wallets": parsed_wallets} if parsed_wallets else {}
     settings = load_settings(config, overrides)

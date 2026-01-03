@@ -8,7 +8,7 @@
 
 ### How to run (FY 2024-2025)
 ```bash
-poetry run solcgt compute \
+solcgt compute \
   --wallet <ADDR1> \
   --wallet <ADDR2> \
   --fy "2024-2025" \

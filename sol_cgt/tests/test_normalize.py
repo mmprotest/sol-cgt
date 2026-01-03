@@ -3,23 +3,15 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 
-import httpx
-
 from sol_cgt.ingestion import normalize
 from sol_cgt.pricing import USDC_MINT
 
 
-def test_normalize_helius_enhanced(monkeypatch) -> None:
-    async def fake_metadata(mint: str):
-        if mint == "TOKENB":
-            return ("TKB", 6)
-        return (None, None)
+def test_normalize_helius_enhanced(monkeypatch, tmp_path) -> None:
+    async def fake_batch(mints: list[str], rpc_url: str):
+        return {mint: 6 if mint == "TOKENB" else None for mint in mints}
 
-    async def fake_jupiter_metadata(mint: str):
-        return (None, None)
-
-    monkeypatch.setattr(normalize.jupiter, "token_metadata", fake_jupiter_metadata)
-    monkeypatch.setattr(normalize.birdeye, "token_metadata", fake_metadata)
+    monkeypatch.setattr(normalize.solana_rpc, "get_mint_decimals_batch", fake_batch)
 
     raw_tx = {
         "signature": "sig1",
@@ -64,7 +56,13 @@ def test_normalize_helius_enhanced(monkeypatch) -> None:
         ],
     }
 
-    events = asyncio.run(normalize.normalize_wallet_events("WALLET", [raw_tx]))
+    events = asyncio.run(
+        normalize.normalize_wallet_events(
+            "WALLET",
+            [raw_tx],
+            mint_cache_path=tmp_path / "mint_meta.json",
+        )
+    )
     assert len(events) == 4
 
     swap_events = [ev for ev in events if ev.kind == "swap"]
@@ -78,7 +76,7 @@ def test_normalize_helius_enhanced(monkeypatch) -> None:
 
     transfer_in = next(ev for ev in events if ev.kind == "transfer_in")
     assert transfer_in.quote_token is not None
-    assert transfer_in.quote_token.symbol == "TKB"
+    assert transfer_in.quote_token.symbol is None
     assert transfer_in.quote_token.amount == Decimal("2.5")
 
     transfer_out = next(ev for ev in events if ev.kind == "transfer_out")
@@ -87,17 +85,11 @@ def test_normalize_helius_enhanced(monkeypatch) -> None:
     assert transfer_out.base_token.amount == Decimal("1")
 
 
-def test_normalize_uses_jupiter_metadata_when_birdeye_fails(monkeypatch) -> None:
-    async def fake_jupiter_metadata(mint: str):
-        if mint == "TOKENC":
-            return ("TKC", 8)
-        return (None, None)
+def test_normalize_prefers_prefetched_decimals(monkeypatch, tmp_path) -> None:
+    async def fake_batch(mints: list[str], rpc_url: str):
+        return {mint: 8 if mint == "TOKENC" else None for mint in mints}
 
-    async def failing_birdeye_metadata(mint: str):
-        raise RuntimeError("Birdeye failure")
-
-    monkeypatch.setattr(normalize.jupiter, "token_metadata", fake_jupiter_metadata)
-    monkeypatch.setattr(normalize.birdeye, "token_metadata", failing_birdeye_metadata)
+    monkeypatch.setattr(normalize.solana_rpc, "get_mint_decimals_batch", fake_batch)
 
     raw_tx = {
         "signature": "sig2",
@@ -115,22 +107,24 @@ def test_normalize_uses_jupiter_metadata_when_birdeye_fails(monkeypatch) -> None
         ],
     }
 
-    events = asyncio.run(normalize.normalize_wallet_events("WALLET", [raw_tx]))
+    events = asyncio.run(
+        normalize.normalize_wallet_events(
+            "WALLET",
+            [raw_tx],
+            mint_cache_path=tmp_path / "mint_meta.json",
+        )
+    )
     transfer_in = next(ev for ev in events if ev.kind == "transfer_in")
     assert transfer_in.quote_token is not None
-    assert transfer_in.quote_token.symbol == "TKC"
+    assert transfer_in.quote_token.symbol is None
     assert transfer_in.quote_token.decimals == 8
 
 
-def test_normalize_metadata_failures_do_not_crash(monkeypatch) -> None:
-    async def failing_jupiter_metadata(mint: str):
-        raise httpx.ConnectError("down", request=httpx.Request("GET", "https://rpc"))
+def test_normalize_metadata_failures_do_not_crash(monkeypatch, tmp_path) -> None:
+    async def fake_batch(mints: list[str], rpc_url: str):
+        return {mint: None for mint in mints}
 
-    async def failing_birdeye_metadata(mint: str):
-        raise httpx.ConnectError("down", request=httpx.Request("GET", "https://birdeye"))
-
-    monkeypatch.setattr(normalize.jupiter, "token_metadata", failing_jupiter_metadata)
-    monkeypatch.setattr(normalize.birdeye, "token_metadata", failing_birdeye_metadata)
+    monkeypatch.setattr(normalize.solana_rpc, "get_mint_decimals_batch", fake_batch)
 
     raw_tx = {
         "signature": "sig3",
@@ -148,7 +142,13 @@ def test_normalize_metadata_failures_do_not_crash(monkeypatch) -> None:
         ],
     }
 
-    events = asyncio.run(normalize.normalize_wallet_events("WALLET", [raw_tx]))
+    events = asyncio.run(
+        normalize.normalize_wallet_events(
+            "WALLET",
+            [raw_tx],
+            mint_cache_path=tmp_path / "mint_meta.json",
+        )
+    )
     transfer_in = next(ev for ev in events if ev.kind == "transfer_in")
     assert transfer_in.quote_token is not None
     assert transfer_in.quote_token.decimals == 0

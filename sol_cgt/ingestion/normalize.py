@@ -5,10 +5,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 import logging
+import os
+from pathlib import Path
 from typing import Iterable, List, Optional
 
 from .. import utils
-from ..providers import birdeye, jupiter
+from ..meta.mints import DEFAULT_MINT_META_PATH, MintMetaCache
+from ..providers import solana_rpc
 from ..types import NormalizedEvent, TokenAmount
 
 LAMPORTS_PER_SOL = Decimal("1000000000")
@@ -32,33 +35,13 @@ def _amount_raw_from_decimal(amount: Decimal, decimals: int) -> int:
     return int((amount * scale).to_integral_value())
 
 
-async def _metadata_for_mint(
-    mint: str,
-    cache: dict[str, tuple[Optional[str], Optional[int]]],
-) -> tuple[Optional[str], Optional[int]]:
-    if mint in cache:
-        return cache[mint]
-    try:
-        symbol, decimals = await jupiter.token_metadata(mint)
-    except Exception as exc:  # pragma: no cover - defensive
-        LOGGER.warning("Jupiter metadata lookup failed for mint=%s: %s", mint, exc)
-        symbol, decimals = None, None
-    if symbol is None and decimals is None:
-        try:
-            symbol, decimals = await birdeye.token_metadata(mint)
-        except Exception as exc:  # pragma: no cover - defensive
-            LOGGER.warning("Birdeye metadata lookup failed for mint=%s: %s", mint, exc)
-            symbol, decimals = None, None
-    cache[mint] = (symbol, decimals)
-    return symbol, decimals
-
-
 async def _build_token_amount(
     payload: Optional[dict],
     *,
     fallback_mint: Optional[str] = None,
-    metadata_cache: dict[str, tuple[Optional[str], Optional[int]]],
+    mint_cache: MintMetaCache,
     decimal_warning_mints: set[str],
+    updated_mints: set[str],
 ) -> Optional[TokenAmount]:
     if not payload and not fallback_mint:
         return None
@@ -71,12 +54,16 @@ async def _build_token_amount(
     symbol = payload.get("symbol") if payload else None
     amount = payload.get("amount") if payload else None
 
-    if decimals is None or symbol is None:
-        meta_symbol, meta_decimals = await _metadata_for_mint(mint, metadata_cache)
-        symbol = symbol or meta_symbol
-        decimals = decimals if decimals is not None else meta_decimals
+    cached_decimals = mint_cache.get_decimals(mint)
+    if cached_decimals is not None:
+        decimals = cached_decimals
+    if decimals is not None and cached_decimals is None:
+        mint_cache.set_decimals(mint, int(decimals))
+        updated_mints.add(mint)
     if decimals is None:
         decimals = 0
+        if mint not in decimal_warning_mints:
+            LOGGER.warning("Missing decimals for mint=%s; defaulting to 0", mint)
         decimal_warning_mints.add(mint)
     if amount_raw is None and amount is not None and decimals is not None:
         amount_raw = _amount_raw_from_decimal(Decimal(str(amount)), int(decimals))
@@ -179,15 +166,17 @@ def _native_amount_payload(entry: dict) -> dict:
 async def _build_swap_legs(
     swap_event: dict,
     *,
-    metadata_cache: dict[str, tuple[Optional[str], Optional[int]]],
+    mint_cache: MintMetaCache,
     decimal_warning_mints: set[str],
+    updated_mints: set[str],
 ) -> List[SwapLeg]:
     legs: List[SwapLeg] = []
     for entry in swap_event.get("tokenInputs") or []:
         token = await _build_token_amount(
             _swap_token_payload(entry),
-            metadata_cache=metadata_cache,
+            mint_cache=mint_cache,
             decimal_warning_mints=decimal_warning_mints,
+            updated_mints=updated_mints,
         )
         if token is not None and token.amount > 0:
             legs.append(
@@ -200,8 +189,9 @@ async def _build_swap_legs(
     for entry in swap_event.get("tokenOutputs") or []:
         token = await _build_token_amount(
             _swap_token_payload(entry),
-            metadata_cache=metadata_cache,
+            mint_cache=mint_cache,
             decimal_warning_mints=decimal_warning_mints,
+            updated_mints=updated_mints,
         )
         if token is not None and token.amount > 0:
             legs.append(
@@ -215,8 +205,9 @@ async def _build_swap_legs(
     if native_input:
         token = await _build_token_amount(
             _native_amount_payload(native_input),
-            metadata_cache=metadata_cache,
+            mint_cache=mint_cache,
             decimal_warning_mints=decimal_warning_mints,
+            updated_mints=updated_mints,
         )
         if token is not None and token.amount > 0:
             legs.append(SwapLeg(token=token, direction="out", price_aud=None))
@@ -224,8 +215,9 @@ async def _build_swap_legs(
     if native_output:
         token = await _build_token_amount(
             _native_amount_payload(native_output),
-            metadata_cache=metadata_cache,
+            mint_cache=mint_cache,
             decimal_warning_mints=decimal_warning_mints,
+            updated_mints=updated_mints,
         )
         if token is not None and token.amount > 0:
             legs.append(SwapLeg(token=token, direction="in", price_aud=None))
@@ -236,19 +228,79 @@ def _attach_decimal_warning(raw: dict, token: TokenAmount, decimal_warning_mints
     if token.mint in decimal_warning_mints:
         raw["decimals_defaulted_mints"] = sorted({token.mint} | set(raw.get("decimals_defaulted_mints", [])))
 
+def _collect_missing_mints(raw_txs: Iterable[dict]) -> set[str]:
+    missing: set[str] = set()
+    for tx in raw_txs:
+        events_payload = tx.get("events") or {}
+        swap_event = events_payload.get("swap") if isinstance(events_payload, dict) else None
+        if isinstance(swap_event, dict):
+            for entry in (swap_event.get("tokenInputs") or []) + (swap_event.get("tokenOutputs") or []):
+                payload = _swap_token_payload(entry)
+                mint = payload.get("mint")
+                decimals = payload.get("decimals")
+                if mint and decimals is None and mint != SOL_MINT:
+                    missing.add(mint)
+        for transfer in tx.get("tokenTransfers") or []:
+            mint = transfer.get("mint")
+            decimals = transfer.get("tokenDecimals")
+            if mint and decimals is None and mint != SOL_MINT:
+                missing.add(mint)
+    return missing
 
-async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[NormalizedEvent]:
+
+def _resolve_rpc_url(explicit_url: Optional[str]) -> str:
+    if explicit_url:
+        return explicit_url
+    api_key = os.getenv("HELIUS_API_KEY")
+    if api_key:
+        base_url = os.getenv("HELIUS_BASE_URL", "https://api-mainnet.helius-rpc.com")
+        return f"{base_url}/?api-key={api_key}"
+    return "https://api.mainnet-beta.solana.com"
+
+
+async def normalize_wallet_events(
+    wallet: str,
+    raw_txs: Iterable[dict],
+    *,
+    prefetch_mints: bool = True,
+    rpc_url: Optional[str] = None,
+    mint_cache_path: Optional[Path] = None,
+) -> List[NormalizedEvent]:
     events: List[NormalizedEvent] = []
-    metadata_cache: dict[str, tuple[Optional[str], Optional[int]]] = {}
+    raw_list = list(raw_txs) if not isinstance(raw_txs, list) else raw_txs
+    mint_cache = MintMetaCache.load(mint_cache_path or DEFAULT_MINT_META_PATH)
+    updated_mints: set[str] = set()
     decimal_warning_mints: set[str] = set()
 
-    raw_count = len(raw_txs) if isinstance(raw_txs, list) else None
+    raw_count = len(raw_list) if isinstance(raw_list, list) else None
     if raw_count is not None:
         LOGGER.info("Normalizing wallet=%s raw_txs=%s", wallet, raw_count)
     else:
         LOGGER.info("Normalizing wallet=%s raw_txs=unknown", wallet)
 
-    for tx in raw_txs:
+    missing_mints = _collect_missing_mints(raw_list)
+    cache_hits = sum(1 for mint in missing_mints if mint in mint_cache.entries)
+    missing_uncached = [mint for mint in missing_mints if mint not in mint_cache.entries]
+    resolved_rpc_url = _resolve_rpc_url(rpc_url) if prefetch_mints else None
+    rpc_batches = 0
+    if prefetch_mints and missing_uncached:
+        resolved = await solana_rpc.get_mint_decimals_batch(missing_uncached, resolved_rpc_url or "")
+        for mint, decimals in resolved.items():
+            mint_cache.set_decimals(mint, decimals)
+            updated_mints.add(mint)
+        rpc_batches = (len(missing_uncached) + solana_rpc.BATCH_SIZE - 1) // solana_rpc.BATCH_SIZE
+    total_missing = len(missing_mints)
+    hit_rate = cache_hits / total_missing if total_missing else 1.0
+    LOGGER.info(
+        "Mint decimals prefetch: unique_missing=%s cache_hits=%s cache_hit_rate=%.2f rpc_batches=%s rpc_url=%s",
+        total_missing,
+        cache_hits,
+        hit_rate,
+        rpc_batches,
+        resolved_rpc_url,
+    )
+
+    for tx in raw_list:
         if tx.get("transactionError"):
             continue
         signature = tx.get("signature") or tx.get("id") or "unknown"
@@ -269,8 +321,9 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
         if swap_event:
             legs = await _build_swap_legs(
                 swap_event,
-                metadata_cache=metadata_cache,
+                mint_cache=mint_cache,
                 decimal_warning_mints=decimal_warning_mints,
+                updated_mints=updated_mints,
             )
             deltas: dict[str, Decimal] = {}
             meta: dict[str, tuple[Optional[str], Optional[int]]] = {}
@@ -334,8 +387,9 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                 }
                 token = await _build_token_amount(
                     payload,
-                    metadata_cache=metadata_cache,
+                    mint_cache=mint_cache,
                     decimal_warning_mints=decimal_warning_mints,
+                    updated_mints=updated_mints,
                 )
                 if token is None:
                     continue
@@ -380,8 +434,9 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
             }
             token = await _build_token_amount(
                 payload,
-                metadata_cache=metadata_cache,
+                mint_cache=mint_cache,
                 decimal_warning_mints=decimal_warning_mints,
+                updated_mints=updated_mints,
             )
             if token is None:
                 continue
@@ -420,8 +475,9 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
                 continue
             token = await _build_token_amount(
                 _native_amount_payload(transfer),
-                metadata_cache=metadata_cache,
+                mint_cache=mint_cache,
                 decimal_warning_mints=decimal_warning_mints,
+                updated_mints=updated_mints,
             )
             if token is None:
                 continue
@@ -467,5 +523,7 @@ async def normalize_wallet_events(wallet: str, raw_txs: Iterable[dict]) -> List[
         events.extend(tx_events)
 
     events.sort(key=lambda ev: (ev.ts, ev.id))
+    if updated_mints:
+        mint_cache.save(mint_cache_path or DEFAULT_MINT_META_PATH)
     LOGGER.info("Normalized wallet=%s events=%s", wallet, len(events))
     return events

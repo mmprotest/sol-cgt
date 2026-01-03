@@ -20,15 +20,7 @@ class FakePriceProvider:
         raise ValueError(f"missing price for {mint}")
 
 
-def test_swap_proceeds_hint_uses_incoming_value(monkeypatch) -> None:
-    async def fake_metadata(mint: str):
-        return (mint[:3], 6)
-
-    async def fake_jupiter_metadata(mint: str):
-        return (None, None)
-
-    monkeypatch.setattr(normalize.jupiter, "token_metadata", fake_jupiter_metadata)
-    monkeypatch.setattr(normalize.birdeye, "token_metadata", fake_metadata)
+def test_swap_proceeds_hint_uses_incoming_value(tmp_path) -> None:
 
     raw_tx = {
         "signature": "swap-hint",
@@ -45,7 +37,13 @@ def test_swap_proceeds_hint_uses_incoming_value(monkeypatch) -> None:
         },
     }
 
-    events = asyncio.run(normalize.normalize_wallet_events("WALLET", [raw_tx]))
+    events = asyncio.run(
+        normalize.normalize_wallet_events(
+            "WALLET",
+            [raw_tx],
+            mint_cache_path=tmp_path / "mint_meta.json",
+        )
+    )
     buy_event = NormalizedEvent(
         id="buy#0",
         ts=datetime(2024, 4, 1, tzinfo=timezone.utc),

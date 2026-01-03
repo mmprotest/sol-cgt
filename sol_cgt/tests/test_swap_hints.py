@@ -4,23 +4,22 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sol_cgt.accounting.engine import AccountingEngine
 from sol_cgt.ingestion import normalize
-from sol_cgt.types import NormalizedEvent, TokenAmount
+from sol_cgt.pricing import TimestampPriceProvider
+from sol_cgt.pricing import valuation as valuation_module
 
 
-class FakePriceProvider:
-    def price_aud(self, mint: str, ts: datetime, *, context: dict | None = None) -> Decimal:
-        prices = {
-            "TOKENA": Decimal("1000"),
-            "TOKENB": Decimal("1"),
-        }
-        if mint in prices:
-            return prices[mint]
-        raise ValueError(f"missing price for {mint}")
+class FakeUsdProvider(TimestampPriceProvider):
+    def __init__(self) -> None:
+        super().__init__(api_key=None)
+
+    def price_usd(self, mint: str, ts: datetime) -> Decimal | None:
+        if mint in {"SOL", "So11111111111111111111111111111111111111112"}:
+            return Decimal("100")
+        return None
 
 
-def test_swap_proceeds_hint_uses_incoming_value(tmp_path) -> None:
+def test_swap_proceeds_hint_uses_stablecoin(tmp_path) -> None:
 
     raw_tx = {
         "signature": "swap-hint",
@@ -28,10 +27,14 @@ def test_swap_proceeds_hint_uses_incoming_value(tmp_path) -> None:
         "events": {
             "swap": {
                 "tokenInputs": [
-                    {"mint": "TOKENA", "decimals": 6, "amount": "1", "price_aud": "100"},
+                    {"mint": "TOKENA", "decimals": 6, "amount": "1"},
                 ],
                 "tokenOutputs": [
-                    {"mint": "TOKENB", "decimals": 6, "amount": "10", "price_aud": "2"},
+                    {
+                        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                        "decimals": 6,
+                        "amount": "10",
+                    },
                 ],
             }
         },
@@ -44,23 +47,15 @@ def test_swap_proceeds_hint_uses_incoming_value(tmp_path) -> None:
             mint_cache_path=tmp_path / "mint_meta.json",
         )
     )
-    buy_event = NormalizedEvent(
-        id="buy#0",
-        ts=datetime(2024, 4, 1, tzinfo=timezone.utc),
-        kind="buy",
-        base_token=None,
-        quote_token=TokenAmount(mint="TOKENA", symbol="TKA", decimals=6, amount_raw=1_000_000),
-        fee_sol=Decimal("0"),
-        wallet="WALLET",
-        counterparty=None,
-        raw={"cost_aud": "50"},
-        tags=set(),
+    warnings = valuation_module.valuate_events(
+        events,
+        valuation_module.ValuationContext(
+            usd_provider=FakeUsdProvider(),
+            fx_rate=lambda _: Decimal("1.0"),
+        ),
     )
-    events = [buy_event, *events]
-    engine = AccountingEngine(price_provider=FakePriceProvider())
-    result = engine.process(events, wallets=["WALLET"])
-
-    disposal = next(record for record in result.disposals if record.token_mint == "TOKENA")
-    assert disposal.proceeds_aud == Decimal("20.00")
-    acquisition = next(lot for lot in result.acquisitions if lot.token_mint == "TOKENB")
-    assert acquisition.unit_cost_aud == Decimal("10.00")
+    assert warnings == []
+    out_event = next(ev for ev in events if ev.raw.get("swap_direction") == "out")
+    in_event = next(ev for ev in events if ev.raw.get("swap_direction") == "in")
+    assert Decimal(out_event.raw["proceeds_hint_usd"]) == Decimal("10")
+    assert Decimal(in_event.raw["cost_hint_usd"]) == Decimal("10")

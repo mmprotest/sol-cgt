@@ -31,10 +31,10 @@ multi-wallet CGT processing.
 - **Invariant:** events are processed in deterministic order; lots are updated consistently.
 
 ### 5) Pricing + FX
-- **Module:** `sol_cgt/pricing.py`
-- **Primary sources:** CoinGecko for SOL/USD historical, Jupiter for SPL token prices, frankfurter.app FX.
-- **Fallback:** Birdeye (if API key provided) and RBA FX.
-- **Invariant:** prices are cached by timestamp bucket and FX by date.
+- **Module:** `sol_cgt/pricing/`
+- **Primary sources:** Birdeye historical-by-unix timestamp pricing (requires API key), frankfurter.app FX.
+- **Fallback:** RBA FX when frankfurter fails; missing token prices are warned and marked unpriced.
+- **Invariant:** token prices are cached by minute bucket and FX by date.
 
 ### 6) Reporting
 - **Module:** `sol_cgt/reporting/`

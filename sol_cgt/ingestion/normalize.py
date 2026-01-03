@@ -324,6 +324,14 @@ async def normalize_wallet_events(
                 decimal_warning_mints=decimal_warning_mints,
                 updated_mints=updated_mints,
             )
+            swap_leg_payload = [
+                {
+                    "mint": leg.token.mint,
+                    "direction": leg.direction,
+                    "amount": str(leg.token.amount or Decimal("0")),
+                }
+                for leg in legs
+            ]
             deltas: dict[str, Decimal] = {}
             meta: dict[str, tuple[Optional[str], Optional[int]]] = {}
             values_in: dict[str, Decimal] = {}
@@ -395,6 +403,7 @@ async def normalize_wallet_events(
                 is_out = net < 0
                 raw_payload = {
                     "swap": swap_event,
+                    "swap_legs": swap_leg_payload,
                     "signature": signature,
                     "source": "helius_swap",
                     "swap_direction": "out" if is_out else "in",

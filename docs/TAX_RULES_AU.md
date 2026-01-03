@@ -46,16 +46,18 @@ not tax advice.
   lot-move audit log; they are not treated as taxable disposals.
 
 ### Swap valuation hints
-- Swap normalization derives proceeds and cost hints when price data is available in the swap
-  payload. Outgoing disposal legs use the incoming consideration value, allocated proportionally
-  across outgoing mints, and incoming acquisition legs use the outgoing value similarly.
-- If price data is missing for some swap mints, the engine falls back to spot pricing and emits
-  a warning.
+- Swaps are valued using **tx-implied consideration** at the exact transaction timestamp.
+  Outgoing disposal legs use the incoming consideration value (stablecoin or SOL anchors when
+  present), allocated proportionally across outgoing mints. Incoming acquisition legs use the
+  outgoing consideration value similarly.
+- If no stablecoin/SOL anchor exists and a timestamped price is unavailable, the swap is marked
+  unpriced and a warning is emitted.
 
 ### Pricing defaults
-- SOL historical pricing uses Kraken daily OHLC closes (SOL/USD) mapped to Australia/Melbourne
-  dates, then converted to AUD using the daily USD→AUD FX rate for that local date.
-- CoinGecko is only used for SOL pricing if a CoinGecko API key is configured.
+- Token pricing uses historical-by-unix-time lookups (Birdeye when a key is available) at the
+  exact transaction timestamp, then converts to AUD using the daily USD→AUD FX rate for that
+  local date.
+- If a price cannot be resolved, the event is left unpriced and a warning is emitted.
 
 ### CGT discount eligibility
 - Disposals held for **≥ 12 months** are flagged as discount-eligible.

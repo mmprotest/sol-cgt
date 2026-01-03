@@ -20,10 +20,6 @@ from . import lots as lots_module
 from . import methods
 
 
-class PriceNotAvailable(RuntimeError):
-    pass
-
-
 class PriceProvider(Protocol):
     def price_aud(self, mint: str, ts: datetime, *, context: Optional[dict] = None) -> Optional[Decimal]:
         ...
@@ -54,7 +50,7 @@ class SimplePriceProvider:
             return Decimal(str(context[key]))
         if mint in self.overrides:
             return self.overrides[mint]
-        raise PriceNotAvailable(f"Price not available for {mint}")
+        return None
 
 
 class AccountingEngine:
@@ -90,12 +86,17 @@ class AccountingEngine:
         matched_in_ids = {match.in_event.id for match in matches}
         swap_hint_warned: set[str] = set()
         default_decimals_warned: set[tuple[Optional[str], str]] = set()
+        missing_price_warned: set[tuple[str, str, str]] = set()
 
         for event in sorted(events, key=lambda ev: (ev.ts, ev.id)):
             if event.id in matched_in_ids:
                 continue
             if event.id in match_by_out:
-                move_record, moved_lots = self._handle_self_transfer(match_by_out[event.id])
+                move_record, moved_lots = self._handle_self_transfer(
+                    match_by_out[event.id],
+                    warnings,
+                    missing_price_warned,
+                )
                 lot_moves.append(move_record)
                 acquisitions.extend(moved_lots)
                 continue
@@ -104,6 +105,7 @@ class AccountingEngine:
                     move_record, moved_lots = self._handle_out_of_scope_transfer(
                         event,
                         warnings,
+                        missing_price_warned,
                         external_lot_tracking,
                     )
                     if move_record is not None:
@@ -114,7 +116,12 @@ class AccountingEngine:
                 if not event.counterparty or event.counterparty not in wallet_set:
                     moved = False
                     if external_lot_tracking:
-                        moved, moved_lots = self._handle_external_return(event, lot_moves, warnings)
+                        moved, moved_lots = self._handle_external_return(
+                            event,
+                            lot_moves,
+                            warnings,
+                            missing_price_warned,
+                        )
                         if moved:
                             acquisitions.extend(moved_lots)
                             continue
@@ -168,17 +175,30 @@ class AccountingEngine:
 
             base_token = event.base_token
             quote_token = event.quote_token
-            fee_aud = self._fee_to_aud(event)
+            fee_aud = self._fee_to_aud(event, warnings, missing_price_warned)
             event.raw["fee_aud"] = str(fee_aud)
             proceeds_aud: Optional[Decimal] = None
             if base_token is not None and base_token.amount > 0:
-                proceeds_aud = self._resolve_proceeds(event, base_token, quote_token)
+                proceeds_aud = self._resolve_proceeds(
+                    event,
+                    base_token,
+                    quote_token,
+                    warnings,
+                    missing_price_warned,
+                )
                 disposals.extend(
                     self._handle_disposal(event, base_token, proceeds_aud, fee_aud)
                 )
             if quote_token is not None and quote_token.amount > 0:
                 acquisitions.append(
-                    self._handle_acquisition(event, quote_token, proceeds_aud, fee_aud)
+                    self._handle_acquisition(
+                        event,
+                        quote_token,
+                        proceeds_aud,
+                        fee_aud,
+                        warnings,
+                        missing_price_warned,
+                    )
                 )
         return AccountingResult(
             acquisitions=acquisitions,
@@ -188,47 +208,62 @@ class AccountingEngine:
         )
 
     # ------------------------------------------------------------------
-    def _fee_to_aud(self, event: NormalizedEvent) -> Decimal:
+    def _fee_to_aud(
+        self,
+        event: NormalizedEvent,
+        warnings: List[WarningRecord],
+        warned: set[tuple[str, str, str]],
+    ) -> Decimal:
         if event.fee_sol == 0:
             return Decimal("0")
-        try:
-            price = self.price_provider.price_aud("SOL", event.ts, context=event.raw)
-            if price is None:
-                raise PriceNotAvailable("Price not available for SOL fees")
-        except PriceNotAvailable:
+        price = self.price_provider.price_aud("SOL", event.ts, context=event.raw)
+        if price is None:
+            self._warn_missing_price(event, "SOL", warnings, warned, code="missing_fee_price")
             return Decimal("0")
         return utils.quantize_aud(event.fee_sol * price)
 
-    def _resolve_price(self, event: NormalizedEvent, token: TokenAmount) -> Decimal:
+    def _resolve_price(
+        self,
+        event: NormalizedEvent,
+        token: TokenAmount,
+        warnings: List[WarningRecord],
+        warned: set[tuple[str, str, str]],
+    ) -> Optional[Decimal]:
         context = dict(event.raw)
         context.setdefault("mint", token.mint)
-        try:
-            price = self.price_provider.price_aud(token.mint, event.ts, context=context)
-            if price is None:
-                raise PriceNotAvailable(f"Price not available for {token.mint}")
-            return price
-        except PriceNotAvailable as exc:
+        price = self.price_provider.price_aud(token.mint, event.ts, context=context)
+        if price is None:
             hint_key = "price_aud"
             if hint_key in event.raw:
                 value = event.raw[hint_key]
                 if isinstance(value, (int, float, str)):
                     return Decimal(str(value))
-            raise exc
+            self._warn_missing_price(event, token.mint, warnings, warned)
+            return None
+        return price
 
     def _resolve_proceeds(
         self,
         event: NormalizedEvent,
         base: TokenAmount,
         quote: Optional[TokenAmount],
+        warnings: List[WarningRecord],
+        warned: set[tuple[str, str, str]],
     ) -> Decimal:
         if "proceeds_aud" in event.raw:
             return Decimal(str(event.raw["proceeds_aud"]))
         if "proceeds_hint_aud" in event.raw:
             return Decimal(str(event.raw["proceeds_hint_aud"]))
+        if "proceeds_hint_usd" in event.raw:
+            return self._convert_usd_hint(event, "proceeds_hint_usd")
         if quote is not None:
-            price = self._resolve_price(event, quote)
+            price = self._resolve_price(event, quote, warnings, warned)
+            if price is None:
+                return Decimal("0")
             return utils.quantize_aud(price * quote.amount)
-        price = self._resolve_price(event, base)
+        price = self._resolve_price(event, base, warnings, warned)
+        if price is None:
+            return Decimal("0")
         return utils.quantize_aud(price * base.amount)
 
     def _handle_disposal(
@@ -295,6 +330,8 @@ class AccountingEngine:
         quote: TokenAmount,
         proceeds_hint: Optional[Decimal],
         fee_aud: Decimal,
+        warnings: List[WarningRecord],
+        warned: set[tuple[str, str, str]],
     ) -> AcquisitionLot:
         qty = quote.amount
         if qty <= 0:
@@ -303,11 +340,16 @@ class AccountingEngine:
             total_cost = Decimal(str(event.raw["cost_aud"]))
         elif "cost_hint_aud" in event.raw:
             total_cost = Decimal(str(event.raw["cost_hint_aud"]))
+        elif "cost_hint_usd" in event.raw:
+            total_cost = self._convert_usd_hint(event, "cost_hint_usd")
         elif proceeds_hint is not None:
             total_cost = proceeds_hint
         else:
-            price = self._resolve_price(event, quote)
-            total_cost = utils.quantize_aud(price * qty)
+            price = self._resolve_price(event, quote, warnings, warned)
+            if price is None:
+                total_cost = Decimal("0")
+            else:
+                total_cost = utils.quantize_aud(price * qty)
         lot_fee = fee_aud if event.base_token is None else Decimal("0")
         unit_cost = utils.quantize_aud(total_cost / qty) if qty != 0 else Decimal("0")
         lot = AcquisitionLot(
@@ -326,13 +368,18 @@ class AccountingEngine:
         self.ledger.add_lot(lot)
         return lot
 
-    def _handle_self_transfer(self, match: TransferMatch) -> tuple[LotMoveRecord, List[AcquisitionLot]]:
+    def _handle_self_transfer(
+        self,
+        match: TransferMatch,
+        warnings: List[WarningRecord],
+        warned: set[tuple[str, str, str]],
+    ) -> tuple[LotMoveRecord, List[AcquisitionLot]]:
         out_event = match.out_event
         in_event = match.in_event
         if out_event.base_token is None or in_event.quote_token is None:
             raise ValueError("Self transfer events missing token data")
         token = out_event.base_token
-        fee_aud = self._fee_to_aud(out_event)
+        fee_aud = self._fee_to_aud(out_event, warnings, warned)
         allocation = methods.allocate(
             self.ledger.lots_for(out_event.wallet, token.mint),
             token.amount,
@@ -389,6 +436,7 @@ class AccountingEngine:
         self,
         event: NormalizedEvent,
         warnings: List[WarningRecord],
+        warned: set[tuple[str, str, str]],
         external_lot_tracking: bool,
     ) -> tuple[Optional[LotMoveRecord], List[AcquisitionLot]]:
         token = event.base_token
@@ -415,7 +463,7 @@ class AccountingEngine:
         external_wallet = self._external_wallet_id(event.counterparty)
         move_fee_allocations = allocate_fee_over_consumed_parts(
             [(lot, qty_used) for lot, qty_used in allocation],
-            self._fee_to_aud(event),
+            self._fee_to_aud(event, warnings, warned),
         )
         lots_consumed: List[dict[str, str]] = []
         lots_created: List[dict[str, str]] = []
@@ -465,7 +513,7 @@ class AccountingEngine:
             mint=token.mint,
             symbol=token.symbol,
             amount=token.amount,
-            fee_aud=self._fee_to_aud(event),
+            fee_aud=self._fee_to_aud(event, warnings, warned),
             lots_consumed=lots_consumed,
             lots_created=lots_created,
         )
@@ -476,6 +524,7 @@ class AccountingEngine:
         event: NormalizedEvent,
         lot_moves: List[LotMoveRecord],
         warnings: List[WarningRecord],
+        warned: set[tuple[str, str, str]],
     ) -> tuple[bool, List[AcquisitionLot]]:
         token = event.quote_token
         if token is None:
@@ -493,7 +542,7 @@ class AccountingEngine:
         moved_lots: List[AcquisitionLot] = []
         move_fee_allocations = allocate_fee_over_consumed_parts(
             [(lot, qty_used) for lot, qty_used in allocation],
-            self._fee_to_aud(event),
+            self._fee_to_aud(event, warnings, warned),
         )
         for (lot, qty_used), allocated_move_fee in zip(allocation, move_fee_allocations):
             remaining_qty = lot.remaining_qty if lot.remaining_qty else lot.qty_acquired
@@ -529,7 +578,7 @@ class AccountingEngine:
                 mint=token.mint,
                 symbol=token.symbol,
                 amount=token.amount,
-                fee_aud=self._fee_to_aud(event),
+                fee_aud=self._fee_to_aud(event, warnings, warned),
                 lots_consumed=lots_consumed,
                 lots_created=lots_created,
             )
@@ -544,6 +593,39 @@ class AccountingEngine:
             )
         )
         return True, moved_lots
+
+    def _warn_missing_price(
+        self,
+        event: NormalizedEvent,
+        mint: str,
+        warnings: List[WarningRecord],
+        warned: set[tuple[str, str]],
+        *,
+        code: str = "missing_price",
+    ) -> None:
+        signature = event.raw.get("signature") or event.id
+        key = (signature, mint, code)
+        if key in warned:
+            return
+        warned.add(key)
+        event.raw["unpriced"] = True
+        event.tags.add("unpriced")
+        warnings.append(
+            WarningRecord(
+                ts=event.ts,
+                wallet=event.wallet,
+                signature=event.raw.get("signature"),
+                code=code,
+                message=f"Price not available for mint={mint} at {event.ts.isoformat()}",
+            )
+        )
+
+    def _convert_usd_hint(self, event: NormalizedEvent, key: str) -> Decimal:
+        usd_value = Decimal(str(event.raw[key]))
+        fx_rate = getattr(self.price_provider, "fx_rate", None)
+        if callable(fx_rate):
+            return utils.quantize_aud(usd_value * fx_rate(event.ts))
+        return utils.quantize_aud(usd_value)
 
     def _external_wallet_id(self, counterparty: Optional[str]) -> str:
         address = counterparty or "unknown"

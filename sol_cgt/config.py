@@ -22,14 +22,31 @@ class YAMLConfigSettingsSource(PydanticBaseSettingsSource):
     def __init__(self, settings_cls: type[BaseSettings], config_path: Optional[Path]):
         super().__init__(settings_cls)
         self.config_path = config_path
+        self._data: Optional[Dict[str, Any]] = None
 
-    def __call__(self) -> Dict[str, Any]:
+    def _load(self) -> Dict[str, Any]:
+        if self._data is not None:
+            return self._data
         if self.config_path is None or not self.config_path.exists():
-            return {}
+            self._data = {}
+            return self._data
         data = yaml.safe_load(self.config_path.read_text())
         if not isinstance(data, dict):
-            return {}
-        return data
+            self._data = {}
+            return self._data
+        self._data = data
+        return self._data
+
+    def __call__(self) -> Dict[str, Any]:
+        return self._load()
+
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
+        data = self._load()
+        if field_name not in data:
+            return None, field_name, False
+        value = data[field_name]
+        is_complex = isinstance(value, (dict, list))
+        return value, field_name, is_complex
 
 
 class AppSettings(BaseSettings):

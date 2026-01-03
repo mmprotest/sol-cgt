@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal, Optional, Set
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ChainTxRef(BaseModel):
@@ -27,7 +27,22 @@ class TokenAmount(BaseModel):
     symbol: Optional[str] = None
     decimals: int = Field(ge=0)
     amount_raw: int
-    amount: Decimal
+    amount: Optional[Decimal] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_amount(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        if values.get("amount") is not None:
+            return values
+        amount_raw = values.get("amount_raw")
+        decimals = values.get("decimals")
+        if amount_raw is None or decimals is None:
+            return values
+        quantizer = Decimal(10) ** -int(decimals)
+        values["amount"] = (Decimal(amount_raw) * quantizer).quantize(quantizer)
+        return values
 
     @field_validator("amount", mode="before")
     @classmethod

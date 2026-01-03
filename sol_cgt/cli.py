@@ -71,6 +71,12 @@ def _resolve_fy_period(fy: Optional[str], fy_start: Optional[str], fy_end: Optio
     return None, None
 
 
+def _summary_value(rows: list[dict[str, object]], key: str, default: object = 0) -> object:
+    if rows:
+        return rows[0].get(key, default)
+    return default
+
+
 @app.command()
 def fetch(
     wallet: List[str] = typer.Option(None, "--wallet", "-w", help="Wallet address", show_default=False),
@@ -174,12 +180,12 @@ def compute(
                 "Financial year": fy_label or "all",
                 "Wallets": ", ".join(wallets),
                 "Method": settings.method,
-                "Total proceeds (AUD)": str(summary_overall.get("proceeds_aud", [0])[0] if not summary_overall.empty else 0),
-                "Total cost base (AUD)": str(summary_overall.get("cost_base_aud", [0])[0] if not summary_overall.empty else 0),
-                "Net gain/loss (AUD)": str(summary_overall.get("gain_loss_aud", [0])[0] if not summary_overall.empty else 0),
+                "Total proceeds (AUD)": str(_summary_value(summary_overall, "proceeds_aud", 0)),
+                "Total cost base (AUD)": str(_summary_value(summary_overall, "cost_base_aud", 0)),
+                "Net gain/loss (AUD)": str(_summary_value(summary_overall, "gain_loss_aud", 0)),
                 "Short-term gain/loss (AUD)": str(short_term_gain),
                 "Discount-eligible gain/loss (AUD)": str(long_term_gain),
-                "Discount eligible gain (AUD)": str(summary_overall.get("discount_eligible_gain_aud", [0])[0] if not summary_overall.empty else 0),
+                "Discount eligible gain (AUD)": str(_summary_value(summary_overall, "discount_eligible_gain_aud", 0)),
                 "Fees total (AUD)": str(fees_total),
                 "Warnings": str(len(warnings)),
             },

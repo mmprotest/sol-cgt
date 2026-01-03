@@ -5,12 +5,10 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Iterable
 
-import pandas as pd
-
 from ..types import DisposalRecord
 
 
-def summarize_by_token(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
+def summarize_by_token(disposals: Iterable[DisposalRecord]) -> list[dict[str, object]]:
     aggregates: dict[str, dict[str, Decimal]] = defaultdict(
         lambda: {
             "proceeds_aud": Decimal("0"),
@@ -49,10 +47,10 @@ def summarize_by_token(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
                 "disposals": int(data["disposals"]),
             }
         )
-    return pd.DataFrame(rows)
+    return rows
 
 
-def summarize_overall(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
+def summarize_overall(disposals: Iterable[DisposalRecord]) -> list[dict[str, object]]:
     proceeds = Decimal("0")
     cost = Decimal("0")
     fees = Decimal("0")
@@ -67,21 +65,19 @@ def summarize_overall(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
         if record.long_term and record.gain_loss_aud > 0:
             discount_eligible_gain += record.gain_loss_aud
         count += 1
-    return pd.DataFrame(
-        [
-            {
-                "proceeds_aud": float(proceeds),
-                "cost_base_aud": float(cost),
-                "fees_aud": float(fees),
-                "gain_loss_aud": float(gain),
-                "discount_eligible_gain_aud": float(discount_eligible_gain),
-                "disposals": count,
-            }
-        ]
-    )
+    return [
+        {
+            "proceeds_aud": float(proceeds),
+            "cost_base_aud": float(cost),
+            "fees_aud": float(fees),
+            "gain_loss_aud": float(gain),
+            "discount_eligible_gain_aud": float(discount_eligible_gain),
+            "disposals": count,
+        }
+    ] if count else []
 
 
-def summarize_by_wallet(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
+def summarize_by_wallet(disposals: Iterable[DisposalRecord]) -> list[dict[str, object]]:
     aggregates: dict[str, dict[str, Decimal]] = defaultdict(
         lambda: {
             "proceeds_aud": Decimal("0"),
@@ -114,4 +110,4 @@ def summarize_by_wallet(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
                 "disposals": int(data["disposals"]),
             }
         )
-    return pd.DataFrame(rows)
+    return rows

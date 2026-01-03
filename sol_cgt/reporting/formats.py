@@ -1,49 +1,86 @@
 """Output writers for CSV and Parquet reports."""
 from __future__ import annotations
 
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Any, Sequence
 
-import pandas as pd
+import csv
 
 from ..types import AcquisitionLot, DisposalRecord
+from .schema import (
+    ACQUISITION_COLUMNS,
+    DISPOSAL_COLUMNS,
+    SUMMARY_BY_TOKEN_COLUMNS,
+    SUMMARY_OVERALL_COLUMNS,
+)
+
+Row = dict[str, Any]
 
 
-def _records_to_frame(records: Sequence) -> pd.DataFrame:
-    if not records:
-        return pd.DataFrame()
-    return pd.DataFrame([r.model_dump() for r in records])
+def _serialize_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
 
 
-def write_csv(path: Path, records: Sequence) -> None:
-    df = _records_to_frame(records)
+def _normalize_rows(records: Sequence) -> list[Row]:
+    rows: list[Row] = []
+    for record in records:
+        if isinstance(record, dict):
+            rows.append(record)
+        else:
+            rows.append(record.model_dump())
+    return rows
+
+
+def write_csv(path: Path, records: Sequence, *, columns: Sequence[str]) -> None:
+    rows = _normalize_rows(records)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(columns), extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: _serialize_value(row.get(key)) for key in columns})
 
 
-def write_parquet(path: Path, records: Sequence) -> None:
-    df = _records_to_frame(records)
+def write_parquet(path: Path, records: Sequence, *, columns: Sequence[str]) -> None:
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError as exc:  # pragma: no cover - behavior tested
+        raise RuntimeError(
+            "Parquet support requires the 'parquet' extra. Install with: pip install -e '.[parquet]'"
+        ) from exc
+    rows = _normalize_rows(records)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)
+    if rows:
+        table = pa.Table.from_pylist(rows)
+    else:
+        table = pa.table({column: [] for column in columns})
+    pq.write_table(table, path)
 
 
 def export_reports(
     outdir: Path,
     acquisitions: Sequence[AcquisitionLot],
     disposals: Sequence[DisposalRecord],
-    summary_by_token: pd.DataFrame,
-    summary_overall: pd.DataFrame,
+    summary_by_token: Sequence[Row],
+    summary_overall: Sequence[Row],
     *,
     fmt: str = "csv",
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     if fmt in ("csv", "both"):
-        write_csv(outdir / "acquisitions.csv", acquisitions)
-        write_csv(outdir / "disposals.csv", disposals)
-        summary_by_token.to_csv(outdir / "summary_by_token.csv", index=False)
-        summary_overall.to_csv(outdir / "summary_overall.csv", index=False)
+        write_csv(outdir / "acquisitions.csv", acquisitions, columns=ACQUISITION_COLUMNS)
+        write_csv(outdir / "disposals.csv", disposals, columns=DISPOSAL_COLUMNS)
+        write_csv(outdir / "summary_by_token.csv", summary_by_token, columns=SUMMARY_BY_TOKEN_COLUMNS)
+        write_csv(outdir / "summary_overall.csv", summary_overall, columns=SUMMARY_OVERALL_COLUMNS)
     if fmt in ("parquet", "both"):
-        write_parquet(outdir / "acquisitions.parquet", acquisitions)
-        write_parquet(outdir / "disposals.parquet", disposals)
-        summary_by_token.to_parquet(outdir / "summary_by_token.parquet", index=False)
-        summary_overall.to_parquet(outdir / "summary_overall.parquet", index=False)
+        write_parquet(outdir / "acquisitions.parquet", acquisitions, columns=ACQUISITION_COLUMNS)
+        write_parquet(outdir / "disposals.parquet", disposals, columns=DISPOSAL_COLUMNS)
+        write_parquet(outdir / "summary_by_token.parquet", summary_by_token, columns=SUMMARY_BY_TOKEN_COLUMNS)
+        write_parquet(outdir / "summary_overall.parquet", summary_overall, columns=SUMMARY_OVERALL_COLUMNS)

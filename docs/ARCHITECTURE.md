@@ -38,7 +38,7 @@ multi-wallet CGT processing.
 
 ### 6) Reporting
 - **Module:** `sol_cgt/reporting/`
-- **Outputs:** CSV/Parquet (existing) plus XLSX (new).
+- **Outputs:** CSV/XLSX by default, with optional Parquet export via extras.
 - **Tabs:** Overview, Transactions, Lots, Disposals, Summary by token, Wallet summary, Lot moves, Warnings.
 
 ### Key invariants

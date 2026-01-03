@@ -18,8 +18,15 @@ STABLECOIN_MINTS = {USDC_MINT, USDT_MINT}
 
 
 class AudPriceProvider:
-    def __init__(self, *, api_key: Optional[str] = None, fx_source: str = "frankfurter") -> None:
+    def __init__(
+        self,
+        *,
+        api_key: Optional[str] = None,
+        jupiter_api_key: Optional[str] = None,
+        fx_source: str = "frankfurter",
+    ) -> None:
         self.api_key = api_key
+        self.jupiter_api_key = jupiter_api_key
         self.fx_source = fx_source
 
     def price_aud(self, mint: str, ts: datetime, *, context: Optional[dict] = None) -> Decimal:
@@ -59,7 +66,7 @@ class AudPriceProvider:
             if price is not None:
                 return price
         try:
-            price = self._run_async(jupiter.price_usd(mint, ts))
+            price = self._run_async(jupiter.price_usd(mint, ts, api_key=self.jupiter_api_key))
             if price is not None:
                 return price
         except jupiter.PriceLookupError:

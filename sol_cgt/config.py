@@ -14,6 +14,7 @@ class APIKeys(BaseModel):
 
     helius: Optional[str] = None
     birdeye: Optional[str] = None
+    jupiter: Optional[str] = None
 
 
 class YAMLConfigSettingsSource(PydanticBaseSettingsSource):

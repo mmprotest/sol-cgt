@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 
+import httpx
+
 from sol_cgt.accounting.engine import AccountingEngine
 from sol_cgt.ingestion import normalize
 from sol_cgt.reconciliation.transfers import detect_self_transfers
@@ -117,3 +119,43 @@ def test_end_to_end_pipeline(monkeypatch) -> None:
     disposal = next(d for d in result.disposals if d.token_mint == "TOKENX")
     assert disposal.wallet == wallet2
     assert disposal.gain_loss_aud == Decimal("6.00")
+
+
+def test_pipeline_metadata_failures_do_not_crash(monkeypatch) -> None:
+    async def failing_jupiter_metadata(mint: str):
+        raise httpx.ConnectError("down", request=httpx.Request("GET", "https://rpc"))
+
+    async def failing_birdeye_metadata(mint: str):
+        raise httpx.ConnectError("down", request=httpx.Request("GET", "https://birdeye"))
+
+    monkeypatch.setattr(normalize.jupiter, "token_metadata", failing_jupiter_metadata)
+    monkeypatch.setattr(normalize.birdeye, "token_metadata", failing_birdeye_metadata)
+
+    raw_txs = [
+        {
+            "signature": "meta1",
+            "timestamp": int(datetime(2024, 5, 1, tzinfo=timezone.utc).timestamp()),
+            "tokenTransfers": [
+                {
+                    "mint": "TOKENZ",
+                    "tokenAmount": "1.0",
+                    "tokenDecimals": None,
+                    "tokenSymbol": None,
+                    "fromUserAccount": "OTHER",
+                    "toUserAccount": "WALLET",
+                }
+            ],
+        }
+    ]
+
+    events = asyncio.run(normalize.normalize_wallet_events("WALLET", raw_txs))
+
+    class FixedPriceProvider:
+        def price_aud(self, mint: str, ts: datetime, *, context: dict | None = None) -> Decimal:
+            return Decimal("2")
+
+    engine = AccountingEngine(price_provider=FixedPriceProvider())
+    result = engine.process(events, wallets=["WALLET"])
+
+    assert result.acquisitions
+    assert any(warning.code == "default_decimals" for warning in result.warnings)

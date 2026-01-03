@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from . import utils
 
 class APIKeys(BaseModel):
     """Container for optional API keys."""
@@ -68,10 +69,21 @@ class AppSettings(BaseSettings):
     external_lot_tracking: bool = True
     apply_cgt_discount: bool = False
     api_keys: APIKeys = Field(default_factory=APIKeys)
-    helius_base_url: str = "https://api-mainnet.helius-rpc.com"
+    helius_enhanced_base_url: str = "https://api-mainnet.helius-rpc.com"
     helius_rpc_url: Optional[str] = None
     helius_tx_limit: int = Field(default=100, ge=1, le=100)
     helius_max_pages: int = Field(default=2000, ge=1)
+
+    @field_validator("helius_rpc_url")
+    @classmethod
+    def _validate_helius_rpc_url(cls, value: Optional[str]) -> Optional[str]:
+        return utils.validate_helius_rpc_url(value)
+
+    @field_validator("helius_enhanced_base_url")
+    @classmethod
+    def _validate_helius_enhanced_base_url(cls, value: str) -> str:
+        utils.validate_helius_enhanced_base_url(value)
+        return value
 
     @classmethod
     def settings_customise_sources(

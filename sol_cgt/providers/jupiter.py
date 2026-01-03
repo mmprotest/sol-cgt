@@ -94,7 +94,10 @@ async def price_usd(mint: str, ts: datetime, *, api_key: Optional[str] = None) -
 
 
 def _rpc_url() -> str:
-    return os.getenv("HELIUS_RPC_URL") or DEFAULT_RPC_URL
+    override = os.getenv("HELIUS_RPC_URL")
+    if override:
+        return utils.validate_helius_rpc_url(override) or override
+    return DEFAULT_RPC_URL
 
 
 def _parse_mint_decimals(raw_data: str) -> Optional[int]:

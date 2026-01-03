@@ -250,11 +250,10 @@ def _collect_missing_mints(raw_txs: Iterable[dict]) -> set[str]:
 
 def _resolve_rpc_url(explicit_url: Optional[str]) -> str:
     if explicit_url:
-        return explicit_url
-    api_key = os.getenv("HELIUS_API_KEY")
-    if api_key:
-        base_url = os.getenv("HELIUS_BASE_URL", "https://api-mainnet.helius-rpc.com")
-        return f"{base_url}/?api-key={api_key}"
+        return utils.validate_helius_rpc_url(explicit_url) or explicit_url
+    env_url = os.getenv("HELIUS_RPC_URL")
+    if env_url:
+        return utils.validate_helius_rpc_url(env_url) or env_url
     return "https://api.mainnet-beta.solana.com"
 
 
@@ -297,7 +296,7 @@ async def normalize_wallet_events(
         cache_hits,
         hit_rate,
         rpc_batches,
-        resolved_rpc_url,
+        utils.redact_api_key(resolved_rpc_url) if resolved_rpc_url else resolved_rpc_url,
     )
 
     for tx in raw_list:

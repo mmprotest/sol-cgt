@@ -130,8 +130,6 @@ def _dependency_versions(packages: list[str]) -> dict[str, str]:
 def _resolve_rpc_url(settings) -> Optional[str]:
     if settings.helius_rpc_url:
         return settings.helius_rpc_url
-    if settings.api_keys.helius:
-        return f"{settings.helius_base_url}/?api-key={settings.api_keys.helius}"
     return None
 
 
@@ -159,7 +157,7 @@ def fetch(
     if not wallets:
         raise typer.BadParameter("No wallets provided")
     api_key = settings.api_keys.helius
-    base_url = settings.helius_base_url
+    base_url = settings.helius_enhanced_base_url
     resolved_limit = limit if limit is not None else settings.helius_tx_limit
     resolved_max_pages = max_pages if max_pages is not None else settings.helius_max_pages
     _, fy_period = _resolve_fy_period(fy, fy_start, fy_end)
@@ -229,7 +227,7 @@ def compute(
                     fetch_mod.fetch_wallet(
                         addr,
                         api_key=settings.api_keys.helius,
-                        base_url=settings.helius_base_url,
+                        base_url=settings.helius_enhanced_base_url,
                         limit=settings.helius_tx_limit,
                         max_pages=settings.helius_max_pages,
                         gte_time=gte_time,
@@ -413,4 +411,4 @@ def debug_env() -> None:
     typer.echo(f"Jupiter token v1 URL: {jupiter_provider.JUPITER_TOKENS_V1_URL}")
     typer.echo(f"Jupiter token v2 URL: {jupiter_provider.JUPITER_TOKENS_V2_URL}")
     typer.echo(f"Jupiter price base URL: {jupiter_provider._price_base_url(os.getenv('JUP_API_KEY'))}")
-    typer.echo(f"Jupiter RPC URL: {jupiter_provider._rpc_url()}")
+    typer.echo(f"Jupiter RPC URL: {utils.redact_api_key(jupiter_provider._rpc_url())}")

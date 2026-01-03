@@ -155,7 +155,7 @@ class AccountingEngine:
                 gain_loss_aud=gain_loss,
                 long_term=long_term,
                 method=self.method,
-                notes=None,
+                notes=f"lot_id={lot.lot_id}",
             )
             records.append(record)
             self.ledger.update_remaining(lot, qty_used)

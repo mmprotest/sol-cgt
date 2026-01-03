@@ -42,9 +42,9 @@ def sha1_digest(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()
 
 
-def write_jsonl(path: Path, records: Iterable[Any]) -> None:
+def write_jsonl(path: Path, records: Iterable[Any], *, mode: str = "a") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
+    with path.open(mode, encoding="utf-8") as fh:
         for item in records:
             fh.write(json_dumps(item))
             fh.write("\n")

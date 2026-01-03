@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
+from zoneinfo import ZoneInfo
 
 try:  # pragma: no cover - optional dependency for speed
     import orjson
@@ -16,6 +17,7 @@ except Exception:  # pragma: no cover - fallback during tests
 
 
 CACHE_ROOT = Path("./cache")
+AU_TZ = ZoneInfo("Australia/Melbourne")
 
 
 def ensure_cache_dir(*parts: str) -> Path:
@@ -68,7 +70,7 @@ class Period:
 
 
 def australian_financial_year_bounds(label: str) -> Period:
-    """Return the UTC bounds for a financial year label ``YYYY-YYYY``."""
+    """Return the UTC bounds for a financial year label ``YYYY-YYYY`` in AU time."""
 
     parts = label.split("-")
     if len(parts) != 2:
@@ -77,9 +79,22 @@ def australian_financial_year_bounds(label: str) -> Period:
     end_year = int(parts[1])
     if end_year != start_year + 1:
         raise ValueError("Financial year end must be start + 1 year")
-    start = datetime(start_year, 7, 1, tzinfo=timezone.utc)
-    end = datetime(end_year, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
-    return Period(start=start, end=end)
+    start_local = datetime(start_year, 7, 1, tzinfo=AU_TZ)
+    end_local = datetime(end_year, 6, 30, 23, 59, 59, tzinfo=AU_TZ)
+    return Period(start=start_local.astimezone(timezone.utc), end=end_local.astimezone(timezone.utc))
+
+
+def parse_local_date(value: str) -> datetime:
+    """Parse a YYYY-MM-DD date into AU local time."""
+    day = datetime.strptime(value, "%Y-%m-%d")
+    return day.replace(tzinfo=AU_TZ)
+
+
+def to_au_local(ts: datetime) -> datetime:
+    """Convert a timestamp to Australia/Melbourne."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(AU_TZ)
 
 
 def utc_now() -> datetime:

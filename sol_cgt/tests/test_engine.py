@@ -68,7 +68,9 @@ def test_fifo_disposal_allocation():
     )
     provider = SimplePriceProvider({"SOL": Decimal("100")})
     engine = AccountingEngine(price_provider=provider)
-    acquisitions, disposals = engine.process([lot1, lot2, disposal])
+    result = engine.process([lot1, lot2, disposal])
+    acquisitions = result.acquisitions
+    disposals = result.disposals
     assert len(acquisitions) == 2
     assert len(disposals) == 2
     assert disposals[0].cost_base_aud == Decimal("100.00")
@@ -108,6 +110,6 @@ def test_hifo_prefers_high_cost():
         raw={"proceeds_aud": "200"},
     )
     engine = AccountingEngine(price_provider=SimplePriceProvider({"SOL": Decimal("0")}), method="HIFO")
-    _, disposals = engine.process([lot1, lot2, disposal])
+    disposals = engine.process([lot1, lot2, disposal]).disposals
     assert len(disposals) == 1
     assert disposals[0].cost_base_aud == Decimal("150.00")

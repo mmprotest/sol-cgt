@@ -18,6 +18,8 @@ def summarize_by_token(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
             "fees_aud": Decimal("0"),
             "gain_loss_aud": Decimal("0"),
             "disposals": Decimal("0"),
+            "qty_disposed": Decimal("0"),
+            "discount_eligible_gain_aud": Decimal("0"),
             "token_symbol": "",
         }
     )
@@ -28,17 +30,22 @@ def summarize_by_token(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
         bucket["cost_base_aud"] += record.cost_base_aud
         bucket["fees_aud"] += record.fees_aud
         bucket["gain_loss_aud"] += record.gain_loss_aud
+        bucket["qty_disposed"] += record.qty_disposed
         bucket["disposals"] += Decimal("1")
+        if record.long_term and record.gain_loss_aud > 0:
+            bucket["discount_eligible_gain_aud"] += record.gain_loss_aud
     rows = []
     for mint, data in aggregates.items():
         rows.append(
             {
                 "token_mint": mint,
                 "token_symbol": data["token_symbol"],
-                "proceeds_aud": float(data["proceeds_aud"]),
-                "cost_base_aud": float(data["cost_base_aud"]),
+                "total_disposals_qty": float(data["qty_disposed"]),
+                "total_proceeds_aud": float(data["proceeds_aud"]),
+                "total_cost_base_aud": float(data["cost_base_aud"]),
                 "fees_aud": float(data["fees_aud"]),
-                "gain_loss_aud": float(data["gain_loss_aud"]),
+                "net_gain_loss_aud": float(data["gain_loss_aud"]),
+                "discount_eligible_gain_aud": float(data["discount_eligible_gain_aud"]),
                 "disposals": int(data["disposals"]),
             }
         )
@@ -50,12 +57,15 @@ def summarize_overall(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
     cost = Decimal("0")
     fees = Decimal("0")
     gain = Decimal("0")
+    discount_eligible_gain = Decimal("0")
     count = 0
     for record in disposals:
         proceeds += record.proceeds_aud
         cost += record.cost_base_aud
         fees += record.fees_aud
         gain += record.gain_loss_aud
+        if record.long_term and record.gain_loss_aud > 0:
+            discount_eligible_gain += record.gain_loss_aud
         count += 1
     return pd.DataFrame(
         [
@@ -64,7 +74,44 @@ def summarize_overall(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
                 "cost_base_aud": float(cost),
                 "fees_aud": float(fees),
                 "gain_loss_aud": float(gain),
+                "discount_eligible_gain_aud": float(discount_eligible_gain),
                 "disposals": count,
             }
         ]
     )
+
+
+def summarize_by_wallet(disposals: Iterable[DisposalRecord]) -> pd.DataFrame:
+    aggregates: dict[str, dict[str, Decimal]] = defaultdict(
+        lambda: {
+            "proceeds_aud": Decimal("0"),
+            "cost_base_aud": Decimal("0"),
+            "fees_aud": Decimal("0"),
+            "gain_loss_aud": Decimal("0"),
+            "discount_eligible_gain_aud": Decimal("0"),
+            "disposals": Decimal("0"),
+        }
+    )
+    for record in disposals:
+        bucket = aggregates[record.wallet]
+        bucket["proceeds_aud"] += record.proceeds_aud
+        bucket["cost_base_aud"] += record.cost_base_aud
+        bucket["fees_aud"] += record.fees_aud
+        bucket["gain_loss_aud"] += record.gain_loss_aud
+        if record.long_term and record.gain_loss_aud > 0:
+            bucket["discount_eligible_gain_aud"] += record.gain_loss_aud
+        bucket["disposals"] += Decimal("1")
+    rows = []
+    for wallet, data in aggregates.items():
+        rows.append(
+            {
+                "wallet": wallet,
+                "total_proceeds_aud": float(data["proceeds_aud"]),
+                "total_cost_base_aud": float(data["cost_base_aud"]),
+                "fees_aud": float(data["fees_aud"]),
+                "net_gain_loss_aud": float(data["gain_loss_aud"]),
+                "discount_eligible_gain_aud": float(data["discount_eligible_gain_aud"]),
+                "disposals": int(data["disposals"]),
+            }
+        )
+    return pd.DataFrame(rows)

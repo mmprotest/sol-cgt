@@ -57,6 +57,10 @@ async def price_at(symbol: str, ts: datetime) -> Optional[Decimal]:
     return Decimal(str(price))
 
 
+async def sol_price_usd(ts: datetime) -> Optional[Decimal]:
+    return await price_at("solana", ts)
+
+
 async def fx_aud_rate(ts: date) -> Decimal:
     path = "/exchange_rates"
     params: dict[str, Any] = {}

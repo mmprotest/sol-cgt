@@ -61,9 +61,11 @@ class AppSettings(BaseSettings):
     tz: str = "UTC"
     method: str = "FIFO"
     price_source: str = "auto"
-    fx_source: str = "rba"
+    fx_source: str = "frankfurter"
     airdrop_cost: str = "zero"
     treat_liquidity_as_disposal: bool = False
+    external_lot_tracking: bool = False
+    apply_cgt_discount: bool = False
     api_keys: APIKeys = Field(default_factory=APIKeys)
 
     @classmethod

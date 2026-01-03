@@ -118,6 +118,8 @@ class AcquisitionLot(BaseModel):
     unit_cost_aud: Decimal
     fees_aud: Decimal
     remaining_qty: Decimal
+    source_event: Optional[str] = None
+    source_type: Optional[str] = None
 
 
 class DisposalRecord(BaseModel):
@@ -136,5 +138,36 @@ class DisposalRecord(BaseModel):
     fees_aud: Decimal
     gain_loss_aud: Decimal
     long_term: bool
+    held_days: int
     method: str
+    signature: Optional[str] = None
     notes: Optional[str] = None
+
+
+class LotMoveRecord(BaseModel):
+    """Represents a non-taxable lot movement between wallets."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    tx_signature: str
+    ts: datetime
+    src_wallet: str
+    dst_wallet: str
+    mint: str
+    symbol: Optional[str] = None
+    amount: Decimal
+    fee_aud: Decimal
+    lots_consumed: list[dict[str, str]] = Field(default_factory=list)
+    lots_created: list[dict[str, str]] = Field(default_factory=list)
+
+
+class WarningRecord(BaseModel):
+    """Represents a warning generated during processing."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    ts: datetime
+    wallet: Optional[str] = None
+    signature: Optional[str] = None
+    code: str
+    message: str

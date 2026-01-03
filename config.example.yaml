@@ -4,9 +4,11 @@ country: AU
 tz: Australia/Melbourne
 method: FIFO
 price_source: auto
-fx_source: rba
+fx_source: frankfurter
 airdrop_cost: zero
 treat_liquidity_as_disposal: false
+external_lot_tracking: false
+apply_cgt_discount: false
 api_keys:
   helius: YOUR_KEY
   birdeye: YOUR_KEY

@@ -624,26 +624,6 @@ class AccountingEngine:
         self.ledger.add_lot(lot)
         return lot
 
-
-def _issue_context(event: NormalizedEvent, token: TokenAmount) -> dict[str, object]:
-    return {
-        "wallet": event.wallet,
-        "mint": token.mint,
-        "symbol": token.symbol,
-        "ts": event.ts,
-        "signature": event.raw.get("signature"),
-        "event_id": event.id,
-        "event_type": event.kind,
-    }
-
-
-def _append_note(existing: Optional[str], note: str) -> str:
-    if not existing:
-        return note
-    if note in existing:
-        return existing
-    return f"{existing}; {note}"
-
     def _handle_external_return(
         self,
         event: NormalizedEvent,
@@ -724,7 +704,7 @@ def _append_note(existing: Optional[str], note: str) -> str:
         event: NormalizedEvent,
         mint: str,
         warnings: List[WarningRecord],
-        warned: set[tuple[str, str]],
+        warned: set[tuple[str, str, str]],
         *,
         code: str = "missing_price",
     ) -> None:
@@ -755,6 +735,26 @@ def _append_note(existing: Optional[str], note: str) -> str:
     def _external_wallet_id(self, counterparty: Optional[str]) -> str:
         address = counterparty or "unknown"
         return f"__external__:{address}"
+
+
+def _issue_context(event: NormalizedEvent, token: TokenAmount) -> dict[str, object]:
+    return {
+        "wallet": event.wallet,
+        "mint": token.mint,
+        "symbol": token.symbol,
+        "ts": event.ts,
+        "signature": event.raw.get("signature"),
+        "event_id": event.id,
+        "event_type": event.kind,
+    }
+
+
+def _append_note(existing: Optional[str], note: str) -> str:
+    if not existing:
+        return note
+    if note in existing:
+        return existing
+    return f"{existing}; {note}"
 
 
 def allocate_fee_over_consumed_parts(

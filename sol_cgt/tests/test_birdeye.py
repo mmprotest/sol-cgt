@@ -76,7 +76,7 @@ def test_birdeye_metadata_404_returns_none(monkeypatch, tmp_path) -> None:
 
 def test_birdeye_429_retries_and_cache(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(utils, "CACHE_ROOT", tmp_path)
-    birdeye._PRICE_CACHE = birdeye.PriceHistoryCache(tmp_path / "birdeye_hist_unix.json")
+    birdeye._PRICE_CACHE = birdeye.PriceHistoryCache(tmp_path / "birdeye_hist_unix.jsonl")
 
     request = httpx.Request("GET", "https://public-api.birdeye.so/defi/historical_price_unix")
     response_429 = httpx.Response(429, headers={"Retry-After": "0"}, request=request)

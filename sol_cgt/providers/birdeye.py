@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import logging
 import os
 import time
@@ -88,14 +89,43 @@ class PriceHistoryCache:
     def _load(self) -> dict[str, dict[str, str]]:
         if self._data is not None:
             return self._data
-        if not self.path.exists():
-            self._data = {}
-            return self._data
-        raw = utils.json_loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            self._data = {}
-            return self._data
-        self._data = {str(key): value for key, value in raw.items() if isinstance(value, dict)}
+        data: dict[str, dict[str, str]] = {}
+        if self.path.exists():
+            for record in utils.read_jsonl(self.path):
+                if not isinstance(record, dict):
+                    continue
+                key = record.get("key")
+                if not isinstance(key, str):
+                    continue
+                entry = {
+                    "price_usd": str(record.get("price_usd")),
+                    "ts": str(record.get("ts")),
+                    "source": str(record.get("source")),
+                }
+                data[key] = entry
+        else:
+            legacy_path = self.path.with_suffix(".json")
+            if legacy_path.exists():
+                raw = utils.json_loads(legacy_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    for key, value in raw.items():
+                        if isinstance(value, dict):
+                            data[str(key)] = {str(k): str(v) for k, v in value.items()}
+                if data:
+                    utils.write_jsonl(
+                        self.path,
+                        [
+                            {
+                                "key": key,
+                                "price_usd": entry.get("price_usd"),
+                                "ts": entry.get("ts"),
+                                "source": entry.get("source"),
+                            }
+                            for key, entry in data.items()
+                        ],
+                        mode="w",
+                    )
+        self._data = data
         return self._data
 
     async def get(self, key: str) -> Optional[Decimal]:
@@ -107,24 +137,42 @@ class PriceHistoryCache:
             price = entry.get("price_usd")
             if price is None:
                 return None
+            _BIRDEYE_STATS["cache_hits"] += 1
             return Decimal(str(price))
 
     async def set(self, key: str, price: Decimal, ts: int, source: str) -> None:
         async with self._lock:
             data = self._load()
-            data[key] = {"price_usd": str(price), "ts": str(ts), "source": source}
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(utils.json_dumps(data), encoding="utf-8")
+            entry = {"price_usd": str(price), "ts": str(ts), "source": source}
+            data[key] = entry
+            utils.write_jsonl(
+                self.path,
+                [{"key": key, "price_usd": entry["price_usd"], "ts": entry["ts"], "source": entry["source"]}],
+            )
 
 
 def _rate_limiter() -> RateLimiter:
-    rps = int(os.getenv("BIRDEYE_RPS", "5"))
-    rpm = int(os.getenv("BIRDEYE_RPM", "60"))
+    rps = int(os.getenv("BIRDEYE_RPS", "2"))
+    rpm = int(os.getenv("BIRDEYE_RPM", "30"))
     return RateLimiter(rps=rps, rpm=rpm)
 
 
 _RATE_LIMITER = _rate_limiter()
-_PRICE_CACHE = PriceHistoryCache(utils.ensure_cache_dir("prices") / "birdeye_hist_unix.json")
+_PRICE_CACHE = PriceHistoryCache(utils.ensure_cache_dir("prices") / "birdeye_hist_unix.jsonl")
+_BIRDEYE_STATS = {"requests": 0, "cache_hits": 0, "429s": 0, "retries": 0}
+
+
+def _log_birdeye_summary() -> None:
+    LOGGER.info(
+        "Birdeye summary: birdeye_requests=%s cache_hits=%s 429_count=%s retries=%s",
+        _BIRDEYE_STATS["requests"],
+        _BIRDEYE_STATS["cache_hits"],
+        _BIRDEYE_STATS["429s"],
+        _BIRDEYE_STATS["retries"],
+    )
+
+
+atexit.register(_log_birdeye_summary)
 
 
 def _cache_path(key: str) -> Path:
@@ -143,12 +191,15 @@ async def _perform_request(
     backoff = 1.0
     for attempt in range(max_retries):
         await _RATE_LIMITER.acquire()
+        _BIRDEYE_STATS["requests"] += 1
         response = await client.get(url, params=params, headers=headers)
         if response.status_code in (401, 403):
             raise ProviderUnavailable("Birdeye API key missing or unauthorized")
         if response.status_code == 404 and allow_not_found:
             return None
         if response.status_code == 429:
+            _BIRDEYE_STATS["429s"] += 1
+            _BIRDEYE_STATS["retries"] += 1
             retry_after = response.headers.get("Retry-After")
             if retry_after:
                 try:
@@ -163,6 +214,7 @@ async def _perform_request(
             await asyncio.sleep(delay)
             continue
         if response.status_code >= 500:
+            _BIRDEYE_STATS["retries"] += 1
             delay = backoff
             backoff = min(backoff * 2, 30)
             if attempt == max_retries - 1:
@@ -306,12 +358,13 @@ async def historical_price_usd_batch(
     cached: dict[int, Decimal] = {}
     missing: list[int] = []
     for ts_value in sorted_times:
-        cache_key = f"{mint}:{ts_value}"
+        bucket = ts_value // 60 * 60
+        cache_key = f"{mint}:{bucket}"
         cached_price = await _PRICE_CACHE.get(cache_key)
         if cached_price is not None:
-            cached[ts_value] = cached_price
+            cached[bucket] = cached_price
         else:
-            missing.append(ts_value)
+            missing.append(bucket)
     if not missing:
         return cached
     joined = ",".join(str(ts) for ts in missing)
@@ -329,9 +382,12 @@ async def historical_price_usd_batch(
             continue
         series = _extract_price_series(payload)
         if series:
-            for bucket, price in series.items():
+            normalized: dict[int, Decimal] = {}
+            for ts_value, price in series.items():
+                bucket = ts_value // 60 * 60
+                normalized[bucket] = price
                 await _PRICE_CACHE.set(f"{mint}:{bucket}", price, bucket, "birdeye")
-            return {**cached, **series}
+            return {**cached, **normalized}
         price = _extract_price(payload)
         if price is not None and len(unix_times) == 1:
             single_bucket = missing[0]

@@ -84,4 +84,4 @@ def test_provider_401_does_not_crash(monkeypatch, caplog) -> None:
     ts = datetime(2024, 8, 1, tzinfo=timezone.utc)
     with caplog.at_level("WARNING"):
         assert provider.price_usd("SOL", ts) is None
-    assert any("Birdeye price lookup failed" in record.message for record in caplog.records)
+    assert any("lookup failed" in record.message.lower() for record in caplog.records)

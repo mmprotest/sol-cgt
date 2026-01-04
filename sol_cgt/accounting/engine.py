@@ -12,6 +12,7 @@ from ..types import (
     AcquisitionLot,
     DisposalRecord,
     LotMoveRecord,
+    MissingLotIssue,
     NormalizedEvent,
     TokenAmount,
     WarningRecord,
@@ -75,6 +76,8 @@ class AccountingEngine:
         wallets: Optional[Iterable[str]] = None,
         transfer_matches: Optional[Iterable[TransferMatch]] = None,
         external_lot_tracking: bool = False,
+        strict_lots: bool = True,
+        missing_lot_issues: Optional[List[MissingLotIssue]] = None,
     ) -> AccountingResult:
         acquisitions: List[AcquisitionLot] = []
         disposals: List[DisposalRecord] = []
@@ -92,14 +95,54 @@ class AccountingEngine:
             if event.id in matched_in_ids:
                 continue
             if event.id in match_by_out:
-                move_record, moved_lots = self._handle_self_transfer(
-                    match_by_out[event.id],
-                    warnings,
-                    missing_price_warned,
-                )
-                lot_moves.append(move_record)
-                acquisitions.extend(moved_lots)
-                continue
+                try:
+                    move_record, moved_lots = self._handle_self_transfer(
+                        match_by_out[event.id],
+                        warnings,
+                        missing_price_warned,
+                    )
+                    lot_moves.append(move_record)
+                    acquisitions.extend(moved_lots)
+                    continue
+                except methods.LotSelectionError as exc:
+                    issue = exc.issue
+                    if issue and missing_lot_issues is not None:
+                        missing_lot_issues.append(issue)
+                    if strict_lots:
+                        raise methods.LotSelectionError(
+                            str(exc),
+                            issue=issue,
+                            partial_result=AccountingResult(
+                                acquisitions=acquisitions,
+                                disposals=disposals,
+                                lot_moves=lot_moves,
+                                warnings=warnings,
+                            ),
+                        ) from exc
+                    if issue is not None:
+                        synthetic = self._add_synthetic_lot(issue, event, source_type="synthetic_missing_basis")
+                        acquisitions.append(synthetic)
+                        warnings.append(
+                            WarningRecord(
+                                ts=event.ts,
+                                wallet=event.wallet,
+                                signature=event.raw.get("signature"),
+                                code="missing_lots_synthetic",
+                                message=(
+                                    "Synthetic acquisition lot created to cover missing basis; "
+                                    "gain/loss results are unreliable."
+                                ),
+                            )
+                        )
+                        move_record, moved_lots = self._handle_self_transfer(
+                            match_by_out[event.id],
+                            warnings,
+                            missing_price_warned,
+                        )
+                        lot_moves.append(move_record)
+                        acquisitions.extend(moved_lots)
+                        continue
+                    raise
             if event.kind == "transfer_out" and event.base_token is not None:
                 if not event.counterparty or event.counterparty not in wallet_set:
                     move_record, moved_lots = self._handle_out_of_scope_transfer(
@@ -186,9 +229,45 @@ class AccountingEngine:
                     warnings,
                     missing_price_warned,
                 )
-                disposals.extend(
-                    self._handle_disposal(event, base_token, proceeds_aud, fee_aud)
-                )
+                try:
+                    disposals.extend(
+                        self._handle_disposal(event, base_token, proceeds_aud, fee_aud)
+                    )
+                except methods.LotSelectionError as exc:
+                    issue = exc.issue
+                    if issue and missing_lot_issues is not None:
+                        missing_lot_issues.append(issue)
+                    if strict_lots:
+                        raise methods.LotSelectionError(
+                            str(exc),
+                            issue=issue,
+                            partial_result=AccountingResult(
+                                acquisitions=acquisitions,
+                                disposals=disposals,
+                                lot_moves=lot_moves,
+                                warnings=warnings,
+                            ),
+                        ) from exc
+                    if issue is None:
+                        raise
+                    synthetic = self._add_synthetic_lot(issue, event, source_type="synthetic_missing_basis")
+                    acquisitions.append(synthetic)
+                    warnings.append(
+                        WarningRecord(
+                            ts=event.ts,
+                            wallet=event.wallet,
+                            signature=event.raw.get("signature"),
+                            code="missing_lots_synthetic",
+                            message=(
+                                "Synthetic acquisition lot created to cover missing basis; "
+                                "gain/loss results are unreliable."
+                            ),
+                        )
+                    )
+                    new_records = self._handle_disposal(event, base_token, proceeds_aud, fee_aud)
+                    for record in new_records:
+                        record.notes = _append_note(record.notes, "unreliable_missing_lots")
+                    disposals.extend(new_records)
             if quote_token is not None and quote_token.amount > 0:
                 acquisitions.append(
                     self._handle_acquisition(
@@ -280,6 +359,7 @@ class AccountingEngine:
             self.method,
             specific=self.specific,
             event_id=event.id,
+            issue_context=_issue_context(event, base),
         )
         if not allocation:
             raise methods.LotSelectionError(
@@ -385,6 +465,7 @@ class AccountingEngine:
             token.amount,
             "FIFO",
             event_id=out_event.id,
+            issue_context=_issue_context(out_event, token),
         )
         move_fee_allocations = allocate_fee_over_consumed_parts(
             [(lot, qty_used) for lot, qty_used in allocation],
@@ -448,6 +529,7 @@ class AccountingEngine:
                 token.amount,
                 "FIFO",
                 event_id=event.id,
+                issue_context=_issue_context(event, token),
             )
         except methods.LotSelectionError as exc:
             warnings.append(
@@ -518,6 +600,49 @@ class AccountingEngine:
             lots_created=lots_created,
         )
         return move, moved_lots
+
+    def _add_synthetic_lot(
+        self,
+        issue: MissingLotIssue,
+        event: NormalizedEvent,
+        *,
+        source_type: str,
+    ) -> AcquisitionLot:
+        lot = AcquisitionLot(
+            lot_id=f"synthetic:{event.id}:{issue.mint}",
+            wallet=issue.wallet,
+            ts=issue.ts,
+            token_mint=issue.mint,
+            token_symbol=issue.symbol,
+            qty_acquired=issue.shortfall_qty,
+            unit_cost_aud=Decimal("0"),
+            fees_aud=Decimal("0"),
+            remaining_qty=issue.shortfall_qty,
+            source_event=issue.event_id,
+            source_type=source_type,
+        )
+        self.ledger.add_lot(lot)
+        return lot
+
+
+def _issue_context(event: NormalizedEvent, token: TokenAmount) -> dict[str, object]:
+    return {
+        "wallet": event.wallet,
+        "mint": token.mint,
+        "symbol": token.symbol,
+        "ts": event.ts,
+        "signature": event.raw.get("signature"),
+        "event_id": event.id,
+        "event_type": event.kind,
+    }
+
+
+def _append_note(existing: Optional[str], note: str) -> str:
+    if not existing:
+        return note
+    if note in existing:
+        return existing
+    return f"{existing}; {note}"
 
     def _handle_external_return(
         self,

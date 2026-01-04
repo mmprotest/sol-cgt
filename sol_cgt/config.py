@@ -69,6 +69,10 @@ class AppSettings(BaseSettings):
     treat_liquidity_as_disposal: bool = False
     external_lot_tracking: bool = True
     apply_cgt_discount: bool = False
+    strict_lots: bool = True
+    auto_backfill: bool = True
+    backfill_step_days: int = Field(default=30, ge=1)
+    max_backfill_days: int = Field(default=3650, ge=1)
     api_keys: APIKeys = Field(default_factory=APIKeys)
     helius_enhanced_base_url: str = "https://api-mainnet.helius-rpc.com"
     helius_rpc_url: Optional[str] = None

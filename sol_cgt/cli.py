@@ -6,7 +6,7 @@ import logging
 import os
 import shutil
 import sys
-from datetime import timezone
+from datetime import timedelta, timezone
 from decimal import Decimal
 from importlib import metadata
 from pathlib import Path
@@ -16,7 +16,8 @@ import click
 import typer
 import typer.core
 
-from .accounting.engine import AccountingEngine
+from .accounting.engine import AccountingEngine, AccountingResult
+from .accounting import methods as accounting_methods
 from .config import load_settings
 from .ingestion import fetch as fetch_mod
 from .ingestion import normalize
@@ -25,7 +26,7 @@ from .pricing import valuation as valuation_module
 from .reconciliation import transfers
 from .reporting import console as console_report
 from .reporting import formats, summaries, xlsx
-from .types import NormalizedEvent
+from .types import MissingLotIssue, NormalizedEvent
 from . import utils
 from .utils import australian_financial_year_bounds, parse_local_date
 from .providers import birdeye as birdeye_provider
@@ -83,6 +84,109 @@ async def _normalize_wallet(
         prefetch_mints=prefetch_mints,
         rpc_url=rpc_url,
     )
+
+
+def _load_and_normalize(
+    wallets: list[str],
+    *,
+    settings,
+    gte_time: Optional[int],
+    lte_time: Optional[int],
+    fetch: bool,
+    prefetch_mints: bool,
+    rpc_url: Optional[str],
+    force_fetch: bool = False,
+) -> tuple[list[NormalizedEvent], dict[str, int]]:
+    events: list[NormalizedEvent] = []
+    kind_counts: dict[str, int] = {}
+    for addr in wallets:
+        if force_fetch and fetch and (gte_time is not None or lte_time is not None):
+            asyncio.run(
+                fetch_mod.fetch_wallet(
+                    addr,
+                    api_key=settings.api_keys.helius,
+                    base_url=settings.helius_enhanced_base_url,
+                    limit=settings.helius_tx_limit,
+                    max_pages=settings.helius_max_pages,
+                    gte_time=gte_time,
+                    lte_time=lte_time,
+                    append=True,
+                )
+            )
+        if not fetch_mod.cache_has_data(addr):
+            if fetch:
+                asyncio.run(
+                    fetch_mod.fetch_wallet(
+                        addr,
+                        api_key=settings.api_keys.helius,
+                        base_url=settings.helius_enhanced_base_url,
+                        limit=settings.helius_tx_limit,
+                        max_pages=settings.helius_max_pages,
+                        gte_time=gte_time,
+                        lte_time=lte_time,
+                    )
+                )
+            else:
+                typer.echo(
+                    f"Skipping {addr}: cache empty or missing and --no-fetch specified"
+                )
+                continue
+        raw_items = fetch_mod.load_cached(addr)
+        wallet_events = asyncio.run(
+            _normalize_wallet(
+                addr,
+                raw_items,
+                prefetch_mints=prefetch_mints,
+                rpc_url=rpc_url,
+            )
+        )
+        logger.info(
+            "Wallet %s raw_txs_loaded=%s normalized_events_count=%s",
+            addr,
+            len(raw_items),
+            len(wallet_events),
+        )
+        events.extend(wallet_events)
+        for ev in wallet_events:
+            kind_counts[ev.kind] = kind_counts.get(ev.kind, 0) + 1
+    return events, kind_counts
+
+
+def _apply_kind_breakdown(kind_counts: dict[str, int]) -> None:
+    if kind_counts:
+        breakdown = ", ".join(f"{kind}={count}" for kind, count in sorted(kind_counts.items()))
+        logger.info("Normalized event breakdown: %s", breakdown)
+    else:
+        logger.info("Normalized event breakdown: none")
+
+
+def _run_accounting(
+    *,
+    events: list[NormalizedEvent],
+    wallets: list[str],
+    settings,
+    price_provider: AudPriceProvider,
+    strict_lots: bool,
+    missing_lot_issues: list[MissingLotIssue],
+) -> tuple[AccountingResult, bool]:
+    engine = AccountingEngine(method=settings.method, price_provider=price_provider)
+    try:
+        result = engine.process(
+            events,
+            wallets=wallets,
+            transfer_matches=transfers.detect_self_transfers(events, wallets),
+            external_lot_tracking=settings.external_lot_tracking,
+            strict_lots=strict_lots,
+            missing_lot_issues=missing_lot_issues,
+        )
+        return result, False
+    except accounting_methods.LotSelectionError as exc:
+        if exc.issue and exc.issue not in missing_lot_issues:
+            missing_lot_issues.append(exc.issue)
+        partial = exc.partial_result
+        if not isinstance(partial, AccountingResult):
+            partial = AccountingResult(acquisitions=[], disposals=[], lot_moves=[], warnings=[])
+        return partial, True
 
 
 def _collect_wallets(wallet_values: Optional[List[str]]) -> List[str]:
@@ -206,66 +310,60 @@ def compute(
         "--prefetch-mints/--no-prefetch-mints",
         help="Prefetch mint decimals via batch RPC before normalization",
     ),
+    strict_lots: Optional[bool] = typer.Option(
+        None,
+        "--strict-lots/--no-strict-lots",
+        help="Stop processing when lots are missing (default from config)",
+    ),
+    auto_backfill: Optional[bool] = typer.Option(
+        None,
+        "--auto-backfill/--no-auto-backfill",
+        help="Automatically backfill earlier history when lots are missing",
+    ),
+    backfill_step_days: Optional[int] = typer.Option(
+        None,
+        "--backfill-step-days",
+        help="Days per backfill step when auto-backfill is enabled",
+    ),
+    max_backfill_days: Optional[int] = typer.Option(
+        None,
+        "--max-backfill-days",
+        help="Maximum days to backfill when auto-backfill is enabled",
+    ),
 ) -> None:
     _configure_logging()
     parsed_wallets = _collect_wallets(wallet)
     overrides = {"wallets": parsed_wallets} if parsed_wallets else {}
     if method:
         overrides["method"] = method
+    if strict_lots is not None:
+        overrides["strict_lots"] = strict_lots
+    if auto_backfill is not None:
+        overrides["auto_backfill"] = auto_backfill
+    if backfill_step_days is not None:
+        overrides["backfill_step_days"] = backfill_step_days
+    if max_backfill_days is not None:
+        overrides["max_backfill_days"] = max_backfill_days
     settings = load_settings(config, overrides)
     _apply_api_keys_to_env(settings)
     wallets = settings.wallets
     if not wallets:
         raise typer.BadParameter("No wallets provided")
     fy_label, fy_period = _resolve_fy_period(fy, fy_start, fy_end)
-    events: List[NormalizedEvent] = []
-    kind_counts: dict[str, int] = {}
     gte_time = int(fy_period.start.timestamp()) if fy_period else None
     lte_time = int(fy_period.end.timestamp()) if fy_period else None
     rpc_url = _resolve_rpc_url(settings)
-    for addr in wallets:
-        if not fetch_mod.cache_has_data(addr):
-            if fetch:
-                asyncio.run(
-                    fetch_mod.fetch_wallet(
-                        addr,
-                        api_key=settings.api_keys.helius,
-                        base_url=settings.helius_enhanced_base_url,
-                        limit=settings.helius_tx_limit,
-                        max_pages=settings.helius_max_pages,
-                        gte_time=gte_time,
-                        lte_time=lte_time,
-                    )
-                )
-            else:
-                typer.echo(
-                    f"Skipping {addr}: cache empty or missing and --no-fetch specified"
-                )
-                continue
-        raw_items = fetch_mod.load_cached(addr)
-        wallet_events = asyncio.run(
-            _normalize_wallet(
-                addr,
-                raw_items,
-                prefetch_mints=prefetch_mints,
-                rpc_url=rpc_url,
-            )
-        )
-        logger.info(
-            "Wallet %s raw_txs_loaded=%s normalized_events_count=%s",
-            addr,
-            len(raw_items),
-            len(wallet_events),
-        )
-        events.extend(wallet_events)
-        for ev in wallet_events:
-            kind_counts[ev.kind] = kind_counts.get(ev.kind, 0) + 1
-    if kind_counts:
-        breakdown = ", ".join(f"{kind}={count}" for kind, count in sorted(kind_counts.items()))
-        logger.info("Normalized event breakdown: %s", breakdown)
-    else:
-        logger.info("Normalized event breakdown: none")
-    matches = transfers.detect_self_transfers(events, wallets)
+    events, kind_counts = _load_and_normalize(
+        wallets,
+        settings=settings,
+        gte_time=gte_time,
+        lte_time=lte_time,
+        fetch=fetch,
+        prefetch_mints=prefetch_mints,
+        rpc_url=rpc_url,
+        force_fetch=False,
+    )
+    _apply_kind_breakdown(kind_counts)
     usd_provider = TimestampPriceProvider(api_key=settings.api_keys.birdeye)
     price_provider = AudPriceProvider(
         api_key=settings.api_keys.birdeye,
@@ -275,6 +373,7 @@ def compute(
     if dry_run:
         typer.echo(f"Loaded {len(events)} normalized events across {len(wallets)} wallet(s)")
         return
+    missing_lot_issues: list[MissingLotIssue] = []
     valuation_warnings = valuation_module.valuate_events(
         events,
         valuation_module.ValuationContext(
@@ -282,13 +381,64 @@ def compute(
             fx_rate=price_provider.fx_rate,
         ),
     )
-    engine = AccountingEngine(method=settings.method, price_provider=price_provider)
-    result = engine.process(
-        events,
+    result, stopped_for_missing = _run_accounting(
+        events=events,
         wallets=wallets,
-        transfer_matches=matches,
-        external_lot_tracking=settings.external_lot_tracking,
+        settings=settings,
+        price_provider=price_provider,
+        strict_lots=settings.strict_lots,
+        missing_lot_issues=missing_lot_issues,
     )
+    if stopped_for_missing and settings.auto_backfill and missing_lot_issues:
+        issue = missing_lot_issues[-1]
+        backfill_end = issue.ts
+        if fy_period and backfill_end < fy_period.start:
+            backfill_end = fy_period.start
+        backfill_days = 0
+        while backfill_days < settings.max_backfill_days:
+            backfill_days += settings.backfill_step_days
+            new_start = backfill_end - timedelta(days=backfill_days)
+            logger.info(
+                "Auto-backfill attempt=%s days=%s start=%s end=%s",
+                (backfill_days // settings.backfill_step_days),
+                backfill_days,
+                new_start.isoformat(),
+                backfill_end.isoformat(),
+            )
+            events, kind_counts = _load_and_normalize(
+                wallets,
+                settings=settings,
+                gte_time=int(new_start.timestamp()),
+                lte_time=int(backfill_end.timestamp()),
+                fetch=True,
+                prefetch_mints=prefetch_mints,
+                rpc_url=rpc_url,
+                force_fetch=True,
+            )
+            _apply_kind_breakdown(kind_counts)
+            missing_lot_issues.clear()
+            valuation_warnings = valuation_module.valuate_events(
+                events,
+                valuation_module.ValuationContext(
+                    usd_provider=usd_provider,
+                    fx_rate=price_provider.fx_rate,
+                ),
+            )
+            result, stopped_for_missing = _run_accounting(
+                events=events,
+                wallets=wallets,
+                settings=settings,
+                price_provider=price_provider,
+                strict_lots=settings.strict_lots,
+                missing_lot_issues=missing_lot_issues,
+            )
+            if not stopped_for_missing:
+                break
+        if stopped_for_missing:
+            logger.warning(
+                "Auto-backfill reached max days (%s) with missing lots still present.",
+                settings.max_backfill_days,
+            )
     disposals = result.disposals
     acquisitions = result.acquisitions
     lot_moves = result.lot_moves
@@ -346,6 +496,7 @@ def compute(
                 "Discount eligible gain (AUD)": str(_summary_value(summary_overall, "discount_eligible_gain_aud", 0)),
                 "Fees total (AUD)": str(fees_total),
                 "Warnings": str(len(warnings)),
+                "Missing lots": str(len(missing_lot_issues)),
             },
             events=[ev for ev in events if not fy_period or fy_period.start <= ev.ts <= fy_period.end],
             lots=acquisitions,
@@ -354,9 +505,16 @@ def compute(
             wallet_summary=wallet_summary,
             lot_moves=lot_moves,
             warnings=warnings,
+            missing_lots=missing_lot_issues,
             price_provider=price_provider,
         )
     console_report.render_summary(disposals, acquisitions, warnings)
+    if stopped_for_missing:
+        logger.error(
+            "Missing lots detected (count=%s). Results may be incomplete until resolved.",
+            len(missing_lot_issues),
+        )
+        raise typer.Exit(code=1)
 
 
 @app.command()

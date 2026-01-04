@@ -52,16 +52,14 @@ def detect_self_transfers(
             for ev in group
             if ev.kind == "transfer_out"
             and ev.base_token is not None
-            and ev.counterparty
-            and ev.counterparty in wallet_set
+            and ev.wallet in wallet_set
         ]
         ins = [
             ev
             for ev in group
             if ev.kind == "transfer_in"
             and ev.quote_token is not None
-            and ev.counterparty
-            and ev.counterparty in wallet_set
+            and ev.wallet in wallet_set
         ]
         used_in: set[str] = set()
         for out_event in outs:
@@ -72,8 +70,11 @@ def detect_self_transfers(
                     continue
                 if not _amount_matches(out_event.base_token.amount, in_event.quote_token.amount):
                     continue
-                if not _counterparty_matches(out_event, in_event):
+                if out_event.wallet == in_event.wallet:
                     continue
+                if out_event.counterparty and in_event.counterparty:
+                    if not _counterparty_matches(out_event, in_event):
+                        continue
                 match = TransferMatch(out_event, in_event)
                 matches.append(match)
                 out_event.tags.add("self_transfer")
@@ -92,12 +93,8 @@ def detect_self_transfers(
         if event.kind == "transfer_out" and event.base_token is not None:
             if event.counterparty and event.counterparty not in wallet_set:
                 continue
-            if not event.counterparty:
-                continue
             pending[event.base_token.mint].append(event)
         elif event.kind == "transfer_in" and event.quote_token is not None:
-            if not event.counterparty:
-                continue
             queue = pending.get(event.quote_token.mint)
             if not queue:
                 continue
@@ -109,8 +106,9 @@ def detect_self_transfers(
                     continue
                 if not _amount_matches(candidate.base_token.amount, event.quote_token.amount):
                     continue
-                if not _counterparty_matches(candidate, event):
-                    continue
+                if candidate.counterparty and event.counterparty:
+                    if not _counterparty_matches(candidate, event):
+                        continue
                 match_index = idx
                 break
             if match_index is not None:

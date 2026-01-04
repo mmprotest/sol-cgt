@@ -11,7 +11,7 @@ from openpyxl.utils import get_column_letter
 
 from .. import utils
 from ..pricing import AudPriceProvider
-from ..types import AcquisitionLot, DisposalRecord, LotMoveRecord, NormalizedEvent, WarningRecord
+from ..types import AcquisitionLot, DisposalRecord, LotMoveRecord, MissingLotIssue, NormalizedEvent, WarningRecord
 from .schema import SUMMARY_BY_TOKEN_COLUMNS, WALLET_SUMMARY_COLUMNS
 
 
@@ -180,6 +180,7 @@ def export_xlsx(
     wallet_summary: Sequence[dict[str, object]],
     lot_moves: Sequence[LotMoveRecord],
     warnings: Sequence[WarningRecord],
+    missing_lots: Sequence[MissingLotIssue],
     price_provider: AudPriceProvider,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,5 +265,42 @@ def export_xlsx(
             warnings_sheet.append(row)
         _apply_header_style(warnings_sheet)
         _auto_width(warnings_sheet)
+
+    missing_sheet = workbook.create_sheet("Missing lots")
+    missing_sheet.append(
+        [
+            "This indicates missing history or misclassified internal transfers; results may be wrong until resolved.",
+        ]
+    )
+    if missing_lots:
+        columns = [
+            "wallet",
+            "mint",
+            "ts",
+            "signature",
+            "event_id",
+            "event_type",
+            "required_qty",
+            "available_qty",
+            "shortfall_qty",
+            "message",
+        ]
+        missing_sheet.append(columns)
+        for issue in missing_lots:
+            payload = issue.model_dump()
+            row = []
+            for key in columns:
+                value = payload.get(key)
+                if hasattr(value, "isoformat"):
+                    row.append(value.isoformat())
+                else:
+                    row.append(value)
+            missing_sheet.append(row)
+        bold = Font(bold=True)
+        for cell in missing_sheet[2]:
+            cell.font = bold
+        missing_sheet.auto_filter.ref = missing_sheet.dimensions
+        missing_sheet.freeze_panes = "A3"
+        _auto_width(missing_sheet)
 
     workbook.save(path)

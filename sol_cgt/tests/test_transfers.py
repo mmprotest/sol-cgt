@@ -148,3 +148,29 @@ def test_detect_self_transfers_multiple_legs_same_signature() -> None:
     assert len(matches) == 2
     pairs = {(match.out_event.wallet, match.in_event.wallet) for match in matches}
     assert pairs == {("W1", "W2"), ("W1", "W3")}
+
+
+def test_detect_self_transfers_signature_without_counterparty() -> None:
+    ts = datetime(2023, 1, 1, 12, tzinfo=timezone.utc)
+    out_event = make_transfer(
+        "t1#0",
+        "transfer_out",
+        "W1",
+        1_000_000,
+        ts,
+        signature="sig-no-ctpy",
+        counterparty=None,
+    )
+    in_event = make_transfer(
+        "t1#1",
+        "transfer_in",
+        "W2",
+        1_000_000,
+        ts + timedelta(seconds=30),
+        signature="sig-no-ctpy",
+        counterparty=None,
+    )
+    matches = detect_self_transfers([out_event, in_event], wallets=["W1", "W2"])
+    assert len(matches) == 1
+    assert "self_transfer" in out_event.tags
+    assert "self_transfer" in in_event.tags

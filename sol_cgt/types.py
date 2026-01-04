@@ -171,3 +171,21 @@ class WarningRecord(BaseModel):
     signature: Optional[str] = None
     code: str
     message: str
+
+
+class MissingLotIssue(BaseModel):
+    """Represents missing acquisition lots needed to satisfy a disposal."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    wallet: str
+    mint: str
+    symbol: Optional[str] = None
+    ts: datetime
+    signature: Optional[str] = None
+    event_id: str
+    event_type: str
+    required_qty: Decimal
+    available_qty: Decimal
+    shortfall_qty: Decimal
+    message: str

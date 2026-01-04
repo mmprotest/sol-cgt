@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from .. import utils
-from ..providers import birdeye, fx_rates, rba_fx
+from ..providers import birdeye, fx_rates, kraken, rba_fx
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -64,6 +64,13 @@ class TimestampPriceProvider:
         mint = normalize_mint(mint)
         if mint in STABLECOIN_MINTS:
             return Decimal("1")
+        if mint == WSOL_MINT:
+            date_local = utils.to_au_local(ts).date()
+            try:
+                return _run_async(kraken.get_sol_usd_close_for_date(date_local))
+            except Exception as exc:
+                LOGGER.warning("Kraken SOL/USD lookup failed for %s: %s", date_local.isoformat(), exc)
+                return None
         bucket = _unix_minute_bucket(ts)
         cached = self.cache.get(mint, bucket)
         if cached is not None:
@@ -87,6 +94,8 @@ class TimestampPriceProvider:
         for mint, bucket in requests:
             mint = normalize_mint(mint)
             if mint in STABLECOIN_MINTS:
+                continue
+            if mint == WSOL_MINT:
                 continue
             if self.cache.get(mint, bucket) is not None:
                 continue

@@ -123,11 +123,13 @@ def test_csv_and_xlsx_outputs(tmp_path) -> None:
         wallet_summary=wallet_summary,
         lot_moves=[],
         warnings=warnings,
+        missing_lots=[],
         price_provider=DummyPriceProvider(),
     )
 
     workbook = load_workbook(xlsx_path)
     assert "Overview" in workbook.sheetnames
+    assert "Missing lots" in workbook.sheetnames
     assert "Summary by token" in workbook.sheetnames
     assert "Wallet summary" in workbook.sheetnames
     assert [cell.value for cell in workbook["Summary by token"][1]] == SUMMARY_BY_TOKEN_COLUMNS

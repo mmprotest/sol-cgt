@@ -460,6 +460,10 @@ async def normalize_wallet_events(
                 "source": "helius_token_transfer",
                 "source_wallet": transfer.get("fromUserAccount") or transfer.get("source"),
                 "destination_wallet": transfer.get("toUserAccount") or transfer.get("destination"),
+                "transfer_mint": token.mint,
+                "transfer_qty": str(token.amount),
+                "transfer_from_wallet": transfer.get("fromUserAccount") or transfer.get("source"),
+                "transfer_to_wallet": transfer.get("toUserAccount") or transfer.get("destination"),
             }
             _attach_decimal_warning(raw_payload, token, decimal_warning_mints)
             tx_events.append(
@@ -511,6 +515,10 @@ async def normalize_wallet_events(
                         "source": "helius_native_transfer",
                         "source_wallet": transfer.get("fromUserAccount") or transfer.get("source"),
                         "destination_wallet": transfer.get("toUserAccount") or transfer.get("destination"),
+                        "transfer_mint": token.mint,
+                        "transfer_qty": str(token.amount),
+                        "transfer_from_wallet": transfer.get("fromUserAccount") or transfer.get("source"),
+                        "transfer_to_wallet": transfer.get("toUserAccount") or transfer.get("destination"),
                     },
                     tags=set(),
                 )

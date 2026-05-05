@@ -29,6 +29,13 @@ def test_compute_fetches_missing_cache_with_fy_filters(monkeypatch) -> None:
 
     monkeypatch.setattr(cli, "AudPriceProvider", DummyPriceProvider)
 
+    async def fake_ensure(*args, **kwargs):
+        from pathlib import Path
+        return Path(".sol_cgt_cache/prices/sol_usd_daily.csv")
+
+    monkeypatch.setattr(cli.sol_price_table, "ensure_sol_usd_daily_prices", fake_ensure)
+    monkeypatch.setattr(cli.sol_price_table, "cache_stats", lambda *_: (0, None, None))
+
     cli.compute(
         wallet=["wallet"],
         config=None,

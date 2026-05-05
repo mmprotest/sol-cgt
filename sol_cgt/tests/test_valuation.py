@@ -83,5 +83,5 @@ def test_provider_401_does_not_crash(monkeypatch, caplog) -> None:
     provider = TimestampPriceProvider(api_key="key")
     ts = datetime(2024, 8, 1, tzinfo=timezone.utc)
     with caplog.at_level("WARNING"):
-        assert provider.price_usd("SOL", ts) is None
+        assert provider.price_usd("TOKENX", ts) is None
     assert any("lookup failed" in record.message.lower() for record in caplog.records)

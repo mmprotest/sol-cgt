@@ -1,6 +1,7 @@
 """Typer CLI for the sol_cgt application."""
 
 import asyncio
+import json
 import inspect
 import logging
 import os
@@ -220,6 +221,47 @@ def _required_price_dates(events: list[NormalizedEvent], fy_period: Optional[uti
     days = [utils.to_au_local(ev.ts).date() for ev in events]
     return min(days), max(days)
 
+
+def _json_default(value):
+    from dataclasses import asdict, is_dataclass
+    from enum import Enum
+    from decimal import Decimal
+    from datetime import date as dt_date, datetime as dt_datetime
+    from pathlib import Path as _Path
+    if is_dataclass(value):
+        return asdict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (dt_datetime, dt_date)):
+        return value.isoformat()
+    if isinstance(value, _Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, bytes):
+        return value.hex()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _export_raw_transactions(xlsx_path: Path, wallet: str, fy_label: Optional[str], source: str, raw_items: list[dict]) -> Path:
+    output_dir = xlsx_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "wallet": wallet,
+        "fy": fy_label or "all",
+        "raw_txs_count": len(raw_items),
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "transactions": raw_items,
+    }
+    export_path = output_dir / "raw_transactions.json"
+    pretty_path = output_dir / "raw_transactions.pretty.json"
+    export_path.write_text(json.dumps(payload, default=_json_default, separators=(",", ":")), encoding="utf-8")
+    pretty_path.write_text(json.dumps(payload, default=_json_default, indent=2), encoding="utf-8")
+    return export_path
+
 def _summary_value(rows: list[dict[str, object]], key: str, default: object = 0) -> object:
     if rows:
         return rows[0].get(key, default)
@@ -310,6 +352,7 @@ def compute(
     fy_end: Optional[str] = typer.Option(None, "--fy-end", help="Financial year end (YYYY-MM-DD)"),
     fmt: str = typer.Option("csv", "--format", help="Report format", show_default=True),
     xlsx_path: Optional[Path] = typer.Option(None, "--xlsx", help="Output XLSX path"),
+    sol_price_csv: Optional[Path] = typer.Option(None, "--sol-price-csv", help="Manual SOL/USD daily CSV path"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Normalize only, no accounting"),
     fetch: bool = typer.Option(
         True,
@@ -357,6 +400,8 @@ def compute(
     if max_backfill_days is not None:
         overrides["max_backfill_days"] = max_backfill_days
     settings = load_settings(config, overrides)
+    if sol_price_csv is not None:
+        os.environ["SOL_CGT_SOL_PRICE_CSV"] = str(sol_price_csv)
     _apply_api_keys_to_env(settings)
     wallets = settings.wallets
     if not wallets:
@@ -365,6 +410,33 @@ def compute(
     gte_time = int(fy_period.start.timestamp()) if fy_period else None
     lte_time = int(fy_period.end.timestamp()) if fy_period else None
     rpc_url = _resolve_rpc_url(settings)
+    raw_by_wallet: dict[str, list[dict]] = {}
+    for addr in wallets:
+        if not fetch_mod.cache_has_data(addr):
+            if fetch:
+                asyncio.run(
+                    fetch_mod.fetch_wallet(
+                        addr,
+                        api_key=settings.api_keys.helius,
+                        base_url=settings.helius_enhanced_base_url,
+                        limit=settings.helius_tx_limit,
+                        max_pages=settings.helius_max_pages,
+                        gte_time=gte_time,
+                        lte_time=lte_time,
+                    )
+                )
+            else:
+                typer.echo(f"Skipping {addr}: cache empty or missing and --no-fetch specified")
+                continue
+        raw_items = fetch_mod.load_cached(addr)
+        raw_by_wallet[addr] = raw_items
+        if xlsx_path:
+            try:
+                export_path = _export_raw_transactions(xlsx_path, addr, fy_label, "helius-cache", raw_items)
+            except Exception as exc:
+                raise RuntimeError(f"Failed to export raw transactions for wallet={addr} path={xlsx_path.parent}: {exc}") from exc
+            logger.info("Raw transactions exported path=%s count=%s", export_path, len(raw_items))
+
     events, kind_counts = _load_and_normalize(
         wallets,
         settings=settings,
@@ -381,7 +453,7 @@ def compute(
         start_day, end_day = price_dates
         cache_path = asyncio.run(sol_price_table.ensure_sol_usd_daily_prices(start_day, end_day))
         rows, _, _ = sol_price_table.cache_stats(cache_path)
-        logger.info("SOL/USD daily price table ready path=%s start=%s end=%s rows=%s source=yahoo", cache_path, start_day.isoformat(), end_day.isoformat(), rows)
+        logger.info("SOL/USD daily price table ready path=%s start=%s end=%s rows=%s source=kraken", cache_path, start_day.isoformat(), end_day.isoformat(), rows)
     birdeye_key = settings.api_keys.birdeye if use_birdeye else None
     usd_provider = TimestampPriceProvider(api_key=birdeye_key)
     price_provider = AudPriceProvider(

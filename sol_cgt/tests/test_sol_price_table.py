@@ -16,13 +16,7 @@ def test_sol_mint_normalization_variants() -> None:
 def test_ensure_prices_uses_cache_when_range_already_covered(tmp_path, monkeypatch) -> None:
     cache_path = tmp_path / "prices.csv"
     monkeypatch.setattr(sol_price_table, "CACHE_PATH", cache_path)
-    sol_price_table._write_cache(
-        cache_path,
-        [
-            sol_price_table.SolDailyPrice(date(2024, 1, 1), Decimal("10"), Decimal("11"), Decimal("9"), Decimal("10.5"), Decimal("100")),
-            sol_price_table.SolDailyPrice(date(2024, 1, 2), Decimal("10"), Decimal("11"), Decimal("9"), Decimal("10.5"), Decimal("100")),
-        ],
-    )
+    sol_price_table._write_cache(cache_path, [sol_price_table.SolDailyPrice(date(2024, 1, 1), Decimal("10"), Decimal("11"), Decimal("9"), Decimal("10.5"), Decimal("100")), sol_price_table.SolDailyPrice(date(2024, 1, 2), Decimal("10"), Decimal("11"), Decimal("9"), Decimal("10.5"), Decimal("100"))])
 
     async def fail_download(*args, **kwargs):
         raise AssertionError("download should not be called")
@@ -32,23 +26,9 @@ def test_ensure_prices_uses_cache_when_range_already_covered(tmp_path, monkeypat
     assert path == cache_path
 
 
-def test_missing_dates_detected(tmp_path, monkeypatch) -> None:
-    cache_path = tmp_path / "prices.csv"
-    monkeypatch.setattr(sol_price_table, "CACHE_PATH", cache_path)
-    sol_price_table._write_cache(
-        cache_path,
-        [sol_price_table.SolDailyPrice(date(2024, 1, 1), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1"))],
-    )
-
-    async def empty_download(*args, **kwargs):
-        return {}
-
-    monkeypatch.setattr(sol_price_table, "_download_range", empty_download)
-    try:
-        __import__("asyncio").run(sol_price_table.ensure_sol_usd_daily_prices(date(2024, 1, 1), date(2024, 1, 3)))
-        assert False, "expected runtime error"
-    except RuntimeError as exc:
-        assert "missing dates" in str(exc)
+def test_missing_ranges_collapsed() -> None:
+    ranges = sol_price_table._collapse_ranges([date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 4)])
+    assert ranges == [(date(2024, 1, 1), date(2024, 1, 2)), (date(2024, 1, 4), date(2024, 1, 4))]
 
 
 def test_sol_price_uses_au_local_date(monkeypatch) -> None:

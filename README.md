@@ -45,7 +45,7 @@ If you're new to Python tooling, follow these steps exactly.
    cp .env.example .env
    ```
 
-   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (`HELIUS_API_KEY`, required for `fetch`). If you also add a [Birdeye](https://birdeye.so/) key (`BIRDEYE_API_KEY`) the tool can source timestamped token prices and token metadata from Birdeye (metadata endpoint: `/defi/v3/token/meta-data/single`). A Jupiter API key (`JUP_API_KEY`) is only used for token metadata search (it is **not** used for historical-by-timestamp pricing). If you do not have a Birdeye key, missing prices are flagged as warnings and left unpriced instead of crashing. Don't have a Birdeye key? No problem — the app still runs and falls back to on-chain mint metadata when needed.
+   Open `.env` in a text editor and paste your [Helius](https://www.helius.dev/) API key (`HELIUS_API_KEY`, required for `fetch`). If you also add a [Birdeye](https://birdeye.so/) key (`BIRDEYE_API_KEY`) the tool can source optional non-SOL token prices and token metadata from Birdeye (metadata endpoint: `/defi/v3/token/meta-data/single`). A Jupiter API key (`JUP_API_KEY`) is only used for token metadata search (it is **not** used for historical-by-timestamp pricing). If you do not have a Birdeye key, missing prices are flagged as warnings and left unpriced instead of crashing. Don't have a Birdeye key? No problem — the app still runs and falls back to on-chain mint metadata when needed.
 
 5. **(Optional) Create a config file**
 
@@ -86,7 +86,7 @@ solcgt report --help
 
 - Multi-wallet aggregation with self-transfer reconciliation.
 - Deterministic lot matching using FIFO/LIFO/HIFO/Specific ID.
-- Cached price and FX lookups to avoid repeated API calls (Birdeye timestamp pricing with batching/caching, daily USD→AUD FX via frankfurter.app with an RBA fallback). On-chain mint metadata lookups use `HELIUS_RPC_URL` when set, otherwise they fall back to the public Solana RPC.
+- Cached price and FX lookups to avoid repeated API calls (local SOL/USD daily table (Kraken-backed) plus optional Birdeye pricing for non-SOL tokens, daily USD→AUD FX via frankfurter.app with an RBA fallback). On-chain mint metadata lookups use `HELIUS_RPC_URL` when set, otherwise they fall back to the public Solana RPC.
 - Structured CSV/XLSX exports by default, with Parquet and rich console summaries available via extras.
 
 ## CLI examples
@@ -125,3 +125,6 @@ The repository stores normalised transactions and API payloads in `./cache` to
 make runs idempotent and auditable.
 
 > **Disclaimer:** This tool assists with record keeping but is not tax advice.
+
+
+SOL pricing: the tool keeps a local CSV cache at `.sol_cgt_cache/prices/sol_usd_daily.csv` and uses it for SOL/WSOL valuation. By default it bulk-downloads daily candles from Kraken (with CoinGecko fallback). You can provide a manual CSV via `--sol-price-csv` or `SOL_CGT_SOL_PRICE_CSV`.

@@ -6,14 +6,14 @@ from decimal import Decimal
 from sol_cgt import pricing
 
 
-def test_sol_price_via_kraken(monkeypatch) -> None:
-    async def fake_sol_price(*args, **kwargs):
+def test_sol_price_via_local_table(monkeypatch) -> None:
+    def fake_sol_price(*args, **kwargs):
         return Decimal("20")
 
     async def fake_fx(day):
         return Decimal("1.5")
 
-    monkeypatch.setattr(pricing.kraken, "get_sol_usd_close_for_date", fake_sol_price)
+    monkeypatch.setattr(pricing.sol_price_table, "get_sol_usd_close_for_date", fake_sol_price)
     monkeypatch.setattr(pricing.fx_rates, "usd_to_aud_rate", fake_fx)
 
     provider = pricing.AudPriceProvider(api_key="key")
@@ -58,11 +58,8 @@ def test_sol_price_missing_warns(monkeypatch, caplog) -> None:
     async def fake_fx(day):
         return Decimal("1")
 
-    async def fake_kraken(*args, **kwargs):
-        raise RuntimeError("unavailable")
-
     monkeypatch.setattr(pricing.fx_rates, "usd_to_aud_rate", fake_fx)
-    monkeypatch.setattr(pricing.kraken, "get_sol_usd_close_for_date", fake_kraken)
+    monkeypatch.setattr(pricing.sol_price_table, "get_sol_usd_close_for_date", lambda *_: None)
 
     provider = pricing.AudPriceProvider(api_key="key")
     ts = datetime(2024, 2, 1, tzinfo=timezone.utc)

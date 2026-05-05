@@ -6,7 +6,7 @@ import logging
 import os
 import shutil
 import sys
-from datetime import timedelta, timezone
+from datetime import date, timedelta, timezone
 from decimal import Decimal
 from importlib import metadata
 from pathlib import Path
@@ -31,6 +31,7 @@ from . import utils
 from .utils import australian_financial_year_bounds, parse_local_date
 from .providers import birdeye as birdeye_provider
 from .providers import jupiter as jupiter_provider
+from .providers import sol_price_table
 
 _orig_option_init = typer.core.TyperOption.__init__
 logger = logging.getLogger(__name__)
@@ -209,6 +210,16 @@ def _resolve_fy_period(fy: Optional[str], fy_start: Optional[str], fy_end: Optio
     return None, None
 
 
+
+
+def _required_price_dates(events: list[NormalizedEvent], fy_period: Optional[utils.Period]) -> tuple[date, date] | None:
+    if fy_period is not None:
+        return utils.to_au_local(fy_period.start).date(), utils.to_au_local(fy_period.end).date()
+    if not events:
+        return None
+    days = [utils.to_au_local(ev.ts).date() for ev in events]
+    return min(days), max(days)
+
 def _summary_value(rows: list[dict[str, object]], key: str, default: object = 0) -> object:
     if rows:
         return rows[0].get(key, default)
@@ -330,6 +341,7 @@ def compute(
         "--max-backfill-days",
         help="Maximum days to backfill when auto-backfill is enabled",
     ),
+    use_birdeye: bool = typer.Option(False, "--use-birdeye/--no-use-birdeye", help="Enable optional Birdeye pricing for non-SOL tokens"),
 ) -> None:
     _configure_logging()
     parsed_wallets = _collect_wallets(wallet)
@@ -364,9 +376,16 @@ def compute(
         force_fetch=False,
     )
     _apply_kind_breakdown(kind_counts)
-    usd_provider = TimestampPriceProvider(api_key=settings.api_keys.birdeye)
+    price_dates = _required_price_dates(events, fy_period)
+    if price_dates is not None:
+        start_day, end_day = price_dates
+        cache_path = asyncio.run(sol_price_table.ensure_sol_usd_daily_prices(start_day, end_day))
+        rows, _, _ = sol_price_table.cache_stats(cache_path)
+        logger.info("SOL/USD daily price table ready path=%s start=%s end=%s rows=%s source=yahoo", cache_path, start_day.isoformat(), end_day.isoformat(), rows)
+    birdeye_key = settings.api_keys.birdeye if use_birdeye else None
+    usd_provider = TimestampPriceProvider(api_key=birdeye_key)
     price_provider = AudPriceProvider(
-        api_key=settings.api_keys.birdeye,
+        api_key=birdeye_key,
         fx_source=settings.fx_source,
         usd_provider=usd_provider,
     )

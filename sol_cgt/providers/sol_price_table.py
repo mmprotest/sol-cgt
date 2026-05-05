@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import csv
 import logging
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -13,9 +14,11 @@ import httpx
 
 
 LOGGER = logging.getLogger(__name__)
-YAHOO_DOWNLOAD_URL = "https://query1.finance.yahoo.com/v7/finance/download/SOL-USD"
+KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
+KRAKEN_PAIR = "SOLUSD"
+COINGECKO_RANGE_URL = "https://api.coingecko.com/api/v3/coins/solana/market_chart/range"
 CACHE_PATH = Path(".sol_cgt_cache") / "prices" / "sol_usd_daily.csv"
-SOURCE = "yahoo"
+SOURCE = "kraken"
 
 
 @dataclass(frozen=True)
@@ -45,15 +48,7 @@ def _read_cache(path: Path) -> dict[date, SolDailyPrice]:
         reader = csv.DictReader(fh)
         for row in reader:
             day = date.fromisoformat(str(row["date"]))
-            rows[day] = SolDailyPrice(
-                day=day,
-                open=_parse_decimal(str(row["open"])),
-                high=_parse_decimal(str(row["high"])),
-                low=_parse_decimal(str(row["low"])),
-                close=_parse_decimal(str(row["close"])),
-                volume=_parse_decimal(str(row["volume"])),
-                source=str(row.get("source") or SOURCE),
-            )
+            rows[day] = SolDailyPrice(day=day, open=_parse_decimal(str(row["open"])), high=_parse_decimal(str(row["high"])), low=_parse_decimal(str(row["low"])), close=_parse_decimal(str(row["close"])), volume=_parse_decimal(str(row["volume"])), source=str(row.get("source") or SOURCE))
     return rows
 
 
@@ -64,17 +59,7 @@ def _write_cache(path: Path, rows: Iterable[SolDailyPrice]) -> None:
         writer = csv.DictWriter(fh, fieldnames=["date", "open", "high", "low", "close", "volume", "source"])
         writer.writeheader()
         for row in sorted(rows, key=lambda r: r.day):
-            writer.writerow(
-                {
-                    "date": row.day.isoformat(),
-                    "open": str(row.open),
-                    "high": str(row.high),
-                    "low": str(row.low),
-                    "close": str(row.close),
-                    "volume": str(row.volume),
-                    "source": row.source,
-                }
-            )
+            writer.writerow({"date": row.day.isoformat(), "open": str(row.open), "high": str(row.high), "low": str(row.low), "close": str(row.close), "volume": str(row.volume), "source": row.source})
     tmp.replace(path)
 
 
@@ -88,54 +73,105 @@ def _missing_dates(cache: dict[date, SolDailyPrice], start_date: date, end_date:
     return missing
 
 
-async def _download_range(start_date: date, end_date: date) -> dict[date, SolDailyPrice]:
-    period1 = int(datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc).timestamp())
-    period2 = int(datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
-    params = {"period1": period1, "period2": period2, "interval": "1d", "events": "history", "includeAdjustedClose": "true"}
+def _collapse_ranges(days: list[date]) -> list[tuple[date, date]]:
+    if not days:
+        return []
+    sorted_days = sorted(days)
+    ranges: list[tuple[date, date]] = []
+    start = end = sorted_days[0]
+    for day in sorted_days[1:]:
+        if day == end + timedelta(days=1):
+            end = day
+            continue
+        ranges.append((start, end))
+        start = end = day
+    ranges.append((start, end))
+    return ranges
+
+
+async def _download_range_kraken(start_date: date, end_date: date) -> dict[date, SolDailyPrice]:
+    since = int(datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc).timestamp())
+    params = {"pair": KRAKEN_PAIR, "interval": 1440, "since": since}
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        resp = await client.get(YAHOO_DOWNLOAD_URL, params=params)
+        resp = await client.get(KRAKEN_OHLC_URL, params=params)
         resp.raise_for_status()
+        data = resp.json()
+    if data.get("error"):
+        raise RuntimeError(f"Kraken returned errors: {data['error']}")
+    rows = data.get("result", {}).get(KRAKEN_PAIR) or []
     parsed: dict[date, SolDailyPrice] = {}
-    reader = csv.DictReader(resp.text.splitlines())
-    for row in reader:
-        if not row.get("Date") or row.get("Close") in {None, "null", ""}:
+    for row in rows:
+        ts = int(row[0])
+        day = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+        if day < start_date or day > end_date:
             continue
-        if row["Open"] == "null" or row["High"] == "null" or row["Low"] == "null" or row["Volume"] == "null":
-            continue
-        day = date.fromisoformat(row["Date"])
-        parsed[day] = SolDailyPrice(
-            day=day,
-            open=_parse_decimal(row["Open"]),
-            high=_parse_decimal(row["High"]),
-            low=_parse_decimal(row["Low"]),
-            close=_parse_decimal(row["Close"]),
-            volume=_parse_decimal(row["Volume"]),
-            source=SOURCE,
-        )
+        parsed[day] = SolDailyPrice(day=day, open=_parse_decimal(row[1]), high=_parse_decimal(row[2]), low=_parse_decimal(row[3]), close=_parse_decimal(row[4]), volume=_parse_decimal(row[6]), source="kraken")
     return parsed
+
+
+async def _download_range_coingecko(start_date: date, end_date: date) -> dict[date, SolDailyPrice]:
+    from_ts = int(datetime(start_date.year, start_date.month, start_date.day, tzinfo=timezone.utc).timestamp())
+    to_ts = int(datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        resp = await client.get(COINGECKO_RANGE_URL, params={"vs_currency": "usd", "from": from_ts, "to": to_ts})
+        resp.raise_for_status()
+        payload = resp.json()
+    prices = payload.get("prices") or []
+    parsed: dict[date, SolDailyPrice] = {}
+    for ts_ms, price in prices:
+        day = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc).date()
+        if day < start_date or day > end_date:
+            continue
+        dec = _parse_decimal(str(price))
+        parsed[day] = SolDailyPrice(day=day, open=dec, high=dec, low=dec, close=dec, volume=Decimal("0"), source="coingecko")
+    return parsed
+
+
+async def _download_range(start_date: date, end_date: date) -> tuple[str, dict[date, SolDailyPrice]]:
+    try:
+        return "kraken", await _download_range_kraken(start_date, end_date)
+    except Exception:
+        return "coingecko", await _download_range_coingecko(start_date, end_date)
+
+
+def _manual_csv_path() -> Path | None:
+    manual = os.getenv("SOL_CGT_SOL_PRICE_CSV")
+    return Path(manual) if manual else None
 
 
 async def ensure_sol_usd_daily_prices(start_date: date, end_date: date) -> Path:
     path = _cache_path()
     cache = _read_cache(path)
+    manual = _manual_csv_path()
+    if manual and manual.exists():
+        cache.update(_read_cache(manual))
+        _write_cache(path, cache.values())
     missing = _missing_dates(cache, start_date, end_date)
     if not missing:
         return path
-    try:
-        downloaded = await _download_range(min(missing), max(missing))
-    except Exception as exc:
-        missing_after = _missing_dates(cache, start_date, end_date)
-        if not missing_after:
-            return path
-        raise RuntimeError(
-            f"SOL/USD price table unavailable; missing dates {missing_after[0].isoformat()}..{missing_after[-1].isoformat()}"
-        ) from exc
-    for day, row in downloaded.items():
-        cache[day] = row
+    ranges = _collapse_ranges(missing)
+    LOGGER.info("SOL/USD daily price download source=kraken start=%s end=%s missing_days=%s ranges=%s requests=%s", start_date.isoformat(), end_date.isoformat(), len(missing), len(ranges), len(ranges))
+    attempted_sources: list[str] = []
+    for range_start, range_end in ranges:
+        try:
+            source, downloaded = await _download_range(range_start, range_end)
+            attempted_sources.append(source)
+            cache.update(downloaded)
+        except Exception as exc:
+            attempted_sources.append("kraken/coingecko")
+            missing_after = _missing_dates(cache, start_date, end_date)
+            if not missing_after:
+                return path
+            raise RuntimeError(
+                "SOL/USD price download failed "
+                f"attempted={','.join(attempted_sources)} requested={start_date.isoformat()}..{end_date.isoformat()} "
+                f"missing={missing_after[0].isoformat()}..{missing_after[-1].isoformat()} cache={path} "
+                "You may manually place sol_usd_daily.csv at the cache path or set SOL_CGT_SOL_PRICE_CSV."
+            ) from exc
     missing_after = _missing_dates(cache, start_date, end_date)
     if missing_after:
         raise RuntimeError(
-            f"SOL/USD price table incomplete; missing dates {missing_after[0].isoformat()}..{missing_after[-1].isoformat()}"
+            f"SOL/USD price table incomplete attempted={','.join(attempted_sources)} requested={start_date.isoformat()}..{end_date.isoformat()} missing={missing_after[0].isoformat()}..{missing_after[-1].isoformat()} cache={path}"
         )
     _write_cache(path, cache.values())
     return path
@@ -144,9 +180,7 @@ async def ensure_sol_usd_daily_prices(start_date: date, end_date: date) -> Path:
 def get_sol_usd_close_for_date(day: date) -> Decimal | None:
     cache = _read_cache(_cache_path())
     row = cache.get(day)
-    if row is None:
-        return None
-    return row.close
+    return None if row is None else row.close
 
 
 def cache_stats(path: Path) -> tuple[int, date | None, date | None]:

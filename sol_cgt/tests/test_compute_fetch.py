@@ -46,6 +46,7 @@ def test_compute_fetches_missing_cache_with_fy_filters(monkeypatch) -> None:
         fy_end=None,
         fmt="csv",
         xlsx_path=None,
+        sol_price_csv=None,
         dry_run=True,
         fetch=True,
     )

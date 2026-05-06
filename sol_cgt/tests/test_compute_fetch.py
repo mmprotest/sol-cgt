@@ -103,3 +103,24 @@ def test_no_fetch_fails_on_incomplete_cache_coverage(monkeypatch) -> None:
         assert False, "expected failure"
     except Exception as exc:
         assert "incomplete" in str(exc).lower()
+
+
+def test_refresh_raw_cache_fetches_once_when_provider_checked(monkeypatch) -> None:
+    settings = AppSettings(wallets=["wallet"], api_keys=APIKeys(helius="key"))
+    states = iter([
+        cli.fetch_mod.CacheCoverage("wallet", "wallet.jsonl", True, 1, 20, 30, 10, 30, False, True, False, [{"start": 10, "end": 30, "reason": "missing_start"}], 0, [], None),
+        cli.fetch_mod.CacheCoverage("wallet", "wallet.jsonl", True, 1, 20, 30, 10, 30, False, True, True, [], 0, [{"checked_start": 10, "checked_end": 30, "exhausted": True}], "provider_checked_range"),
+    ])
+    monkeypatch.setattr(cli.fetch_mod, "inspect_raw_cache_coverage", lambda *args, **kwargs: next(states))
+    calls = {"n": 0}
+
+    async def fake_fetch_wallet(*args, **kwargs):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(cli.fetch_mod, "fetch_wallet", fake_fetch_wallet)
+    monkeypatch.setattr(cli.fetch_mod, "load_cached", lambda _: [])
+    monkeypatch.setattr(cli.fetch_mod, "get_provider_checked_ranges", lambda _: [{"provider": "enhanced", "checked_start": 10, "checked_end": 30, "exhausted": True, "rows_returned": 0, "unique_signatures": 0, "earliest_returned_timestamp": None, "latest_returned_timestamp": None}])
+    complete, _ = cli._ensure_cache_coverage(["wallet"], gte_time=10, lte_time=30, fetch=True, settings=settings, refresh_raw_cache=True)
+    assert complete
+    assert calls["n"] == 1

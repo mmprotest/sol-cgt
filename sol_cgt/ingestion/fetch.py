@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import json
 import logging
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -14,6 +15,7 @@ from ..providers import helius
 RAW_CACHE_DIR = utils.ensure_cache_dir("raw")
 
 logger = logging.getLogger(__name__)
+PROVIDER_CHECKED_RANGES_PATH = RAW_CACHE_DIR / "provider_checked_ranges.json"
 
 
 @dataclass
@@ -27,6 +29,7 @@ class FetchStats:
     duplicate_signatures: int
     earliest_timestamp: Optional[int]
     latest_timestamp: Optional[int]
+    exhausted: bool = False
 
 
 @dataclass
@@ -45,6 +48,60 @@ class CacheCoverage:
     missing_ranges: list[dict[str, int | str]]
     malformed_rows: int = 0
     provider_checked_ranges: list[dict[str, int | str]] | None = None
+    coverage_complete_reason: str | None = None
+
+
+_PROVIDER_CHECKED_RANGES_IN_MEMORY: dict[str, list[dict[str, int | str | bool | None]]] = {}
+
+
+def _provider_checked_key(wallet: str, provider: str, token_accounts_mode: str) -> str:
+    return f"{wallet}|{provider}|{token_accounts_mode}"
+
+
+def _load_provider_checked_ranges() -> dict[str, list[dict[str, int | str | bool | None]]]:
+    if not PROVIDER_CHECKED_RANGES_PATH.exists():
+        return {}
+    with PROVIDER_CHECKED_RANGES_PATH.open("r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    return data if isinstance(data, dict) else {}
+
+
+def _persist_provider_checked_ranges() -> None:
+    existing = _load_provider_checked_ranges()
+    existing.update(_PROVIDER_CHECKED_RANGES_IN_MEMORY)
+    PROVIDER_CHECKED_RANGES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with PROVIDER_CHECKED_RANGES_PATH.open("w", encoding="utf-8") as fh:
+        json.dump(existing, fh)
+
+
+def record_provider_checked_range(wallet: str, provider: str, token_accounts_mode: str, checked_start: int, checked_end: int, pages: int, rows_returned: int, unique_signatures: int, earliest_returned_timestamp: Optional[int], latest_returned_timestamp: Optional[int], exhausted: bool) -> dict[str, int | str | bool | None]:
+    row: dict[str, int | str | bool | None] = {
+        "wallet": wallet,
+        "provider": provider,
+        "token_accounts_mode": token_accounts_mode,
+        "checked_start": checked_start,
+        "checked_end": checked_end,
+        "pages": pages,
+        "rows_returned": rows_returned,
+        "unique_signatures": unique_signatures,
+        "earliest_returned_timestamp": earliest_returned_timestamp,
+        "latest_returned_timestamp": latest_returned_timestamp,
+        "exhausted": exhausted,
+    }
+    key = _provider_checked_key(wallet, provider, token_accounts_mode)
+    _PROVIDER_CHECKED_RANGES_IN_MEMORY.setdefault(key, []).append(row)
+    _persist_provider_checked_ranges()
+    return row
+
+
+def get_provider_checked_ranges(wallet: str) -> list[dict[str, int | str | bool | None]]:
+    combined = _load_provider_checked_ranges()
+    combined.update(_PROVIDER_CHECKED_RANGES_IN_MEMORY)
+    rows: list[dict[str, int | str | bool | None]] = []
+    for key, values in combined.items():
+        if key.split("|", 1)[0] == wallet:
+            rows.extend(values)
+    return rows
 
 
 def _wallet_cache_path(wallet: str) -> Path:
@@ -89,6 +146,7 @@ async def fetch_wallet(
     if provider not in {"enhanced", "getTransactionsForAddress", "auto"}:
         raise RuntimeError(f"Unsupported Helius history provider: {provider}")
     selected_provider = "enhanced" if provider == "auto" else provider
+    exhausted = False
     for page_idx in range(max_pages):
         if gte_time is None or lte_time is None:
             raise RuntimeError("fetch_wallet requires gte_time and lte_time")
@@ -121,6 +179,7 @@ async def fetch_wallet(
             cursor = str(page[-1].get("signature")) if page and page[-1].get("signature") else None
         if not page:
             logger.info("No more transactions for wallet=%s after page=%s", wallet, page_idx + 1)
+            exhausted = True
             break
         all_txs.extend(page)
         rows_returned += len(page)
@@ -175,6 +234,20 @@ async def fetch_wallet(
         max_ts,
         path,
     )
+    if gte_time is not None and lte_time is not None:
+        record_provider_checked_range(
+            wallet,
+            selected_provider,
+            token_accounts,
+            gte_time,
+            lte_time,
+            page_idx + 1 if all_txs else 0,
+            rows_returned,
+            unique_signatures,
+            min_ts,
+            max_ts,
+            exhausted,
+        )
     return deduped
 
 
@@ -279,7 +352,10 @@ def inspect_raw_cache_coverage(wallet: str, requested_start: Optional[int], requ
         max_ts = ts if max_ts is None else max(max_ts, ts)
     covers_start = requested_start is None or (min_ts is not None and min_ts <= requested_start)
     covers_end = requested_end is None or (max_ts is not None and max_ts >= requested_end)
+    coverage_complete_reason: Optional[str] = None
     coverage_complete = bool(raw_tx_count) and covers_start and covers_end and malformed_rows == 0
+    if coverage_complete:
+        coverage_complete_reason = "timestamp_span"
     missing_ranges: list[dict[str, int | str]] = []
     if raw_tx_count == 0:
         if requested_start is not None and requested_end is not None:
@@ -293,6 +369,18 @@ def inspect_raw_cache_coverage(wallet: str, requested_start: Optional[int], requ
         coverage_complete = False
         if not missing_ranges:
             missing_ranges.append({"start": requested_start, "end": requested_end, "reason": "malformed_or_missing_timestamps"})
+    provider_checked_ranges = get_provider_checked_ranges(wallet)
+    if not coverage_complete and requested_start is not None and requested_end is not None and malformed_rows == 0:
+        for row in provider_checked_ranges:
+            if not row.get("exhausted"):
+                continue
+            checked_start = row.get("checked_start")
+            checked_end = row.get("checked_end")
+            if isinstance(checked_start, int) and isinstance(checked_end, int) and checked_start <= requested_start and checked_end >= requested_end:
+                coverage_complete = True
+                coverage_complete_reason = "provider_checked_range"
+                missing_ranges = []
+                break
     return CacheCoverage(
         wallet=wallet,
         cache_path=str(path),
@@ -307,5 +395,6 @@ def inspect_raw_cache_coverage(wallet: str, requested_start: Optional[int], requ
         coverage_complete=coverage_complete,
         missing_ranges=missing_ranges,
         malformed_rows=malformed_rows,
-        provider_checked_ranges=[],
+        provider_checked_ranges=provider_checked_ranges,
+        coverage_complete_reason=coverage_complete_reason,
     )

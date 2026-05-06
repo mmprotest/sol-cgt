@@ -102,6 +102,10 @@ def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPric
                 "counterparty": event.counterparty or "",
                 "notes": ",".join(sorted(event.tags)) if event.tags else "",
                 "source": event.raw.get("source") or "",
+                "valuation_method": event.raw.get("valuation_method") or "",
+                "valuation_reference_asset": event.raw.get("valuation_reference_asset") or "",
+                "valuation_reference_amount": event.raw.get("valuation_reference_amount") or "",
+                "valuation_confidence": event.raw.get("valuation_confidence") or "",
             }
         )
     return rows

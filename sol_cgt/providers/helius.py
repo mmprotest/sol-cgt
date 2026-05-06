@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from tenacity import RetryError, retry, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import RetryError, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from .. import utils
 
@@ -57,7 +57,7 @@ def _truncate_text(value: str, max_chars: int = 2000) -> str:
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
+    wait=wait_random_exponential(multiplier=1, min=1, max=8),
     retry=retry_if_exception(_should_retry),
 )
 async def _perform_request(client: httpx.AsyncClient, url: str, params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -90,6 +90,7 @@ async def fetch_txs(
     before_signature: Optional[str] = None,
     after_signature: Optional[str] = None,
     sort_order: str = "desc",
+    token_accounts: str = "balanceChanged",
     gte_time: Optional[int] = None,
     lte_time: Optional[int] = None,
     limit: int = HELIUS_TX_LIMIT_MAX,
@@ -105,7 +106,12 @@ async def fetch_txs(
     utils.validate_helius_enhanced_base_url(base_url)
     url = f"{base_url}/v0/addresses/{wallet}/transactions"
     limit = max(1, min(limit, HELIUS_TX_LIMIT_MAX))
-    params: dict[str, Any] = {"api-key": api_key, "limit": limit, "sort-order": sort_order}
+    params: dict[str, Any] = {
+        "api-key": api_key,
+        "limit": limit,
+        "sort-order": sort_order,
+        "token-accounts": token_accounts,
+    }
     if before_signature:
         params["before-signature"] = before_signature
     if after_signature:
@@ -129,7 +135,7 @@ async def fetch_txs(
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=8),
+    wait=wait_random_exponential(multiplier=1, min=1, max=8),
     retry=retry_if_exception(_should_retry),
 )
 async def _perform_rpc_request(client: httpx.AsyncClient, rpc_url: str, body: dict[str, Any]) -> dict[str, Any]:

@@ -128,6 +128,10 @@ def quantize_aud(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"))
 
 
+def quantize_unit_cost_aud(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.000000000001"))
+
+
 def chunked(seq: Sequence[Any], size: int) -> Iterator[Sequence[Any]]:
     for idx in range(0, len(seq), size):
         yield seq[idx : idx + size]

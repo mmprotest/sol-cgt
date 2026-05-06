@@ -113,3 +113,63 @@ def test_hifo_prefers_high_cost():
     disposals = engine.process([lot1, lot2, disposal]).disposals
     assert len(disposals) == 1
     assert disposals[0].cost_base_aud == Decimal("150.00")
+
+
+def test_low_unit_price_cost_basis_preserved_full_disposal() -> None:
+    ts1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    ts2 = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    wallet = "W3"
+    qty_raw = 358_099_601_641
+    acquisition = _event(
+        "lp1#0",
+        "buy",
+        ts=ts1,
+        wallet=wallet,
+        quote=_token("LOW", qty_raw, decimals=6, symbol="LOW"),
+        raw={"cost_aud": "42.33"},
+    )
+    disposal = _event(
+        "lp2#0",
+        "sell",
+        ts=ts2,
+        wallet=wallet,
+        base=_token("LOW", qty_raw, decimals=6, symbol="LOW"),
+        raw={"proceeds_aud": "39.54"},
+    )
+
+    result = AccountingEngine(price_provider=SimplePriceProvider({"SOL": Decimal("0")})).process([acquisition, disposal])
+    assert result.acquisitions[0].unit_cost_aud > Decimal("0")
+    assert len(result.disposals) == 1
+    assert result.disposals[0].cost_base_aud == Decimal("42.33")
+
+
+def test_low_unit_price_cost_basis_preserved_partial_disposal() -> None:
+    ts1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    ts2 = datetime(2024, 1, 3, tzinfo=timezone.utc)
+    wallet = "W4"
+    qty_raw = 358_099_601_641
+    sold_raw = qty_raw // 2
+    qty = Decimal(qty_raw) / Decimal("1000000")
+    sold_qty = Decimal(sold_raw) / Decimal("1000000")
+    expected_cost_base = (Decimal("42.33") * sold_qty / qty).quantize(Decimal("0.01"))
+
+    acquisition = _event(
+        "pp1#0",
+        "buy",
+        ts=ts1,
+        wallet=wallet,
+        quote=_token("LOW", qty_raw, decimals=6, symbol="LOW"),
+        raw={"cost_aud": "42.33"},
+    )
+    disposal = _event(
+        "pp2#0",
+        "sell",
+        ts=ts2,
+        wallet=wallet,
+        base=_token("LOW", sold_raw, decimals=6, symbol="LOW"),
+        raw={"proceeds_aud": "20.00"},
+    )
+
+    result = AccountingEngine(price_provider=SimplePriceProvider({"SOL": Decimal("0")})).process([acquisition, disposal])
+    assert len(result.disposals) == 1
+    assert result.disposals[0].cost_base_aud == expected_cost_base

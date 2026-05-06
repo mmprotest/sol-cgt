@@ -72,13 +72,27 @@ def export_reports(
     summary_overall: Sequence[Row],
     *,
     fmt: str = "csv",
+    manual_review: Sequence[Row] = (),
+    dust_ignored: Sequence[Row] = (),
+    internal_transfers: Sequence[Row] = (),
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     if fmt in ("csv", "both"):
+        write_csv(outdir / "taxable_acquisitions.csv", acquisitions, columns=ACQUISITION_COLUMNS)
+        write_csv(outdir / "taxable_disposals.csv", disposals, columns=DISPOSAL_COLUMNS)
         write_csv(outdir / "acquisitions.csv", acquisitions, columns=ACQUISITION_COLUMNS)
         write_csv(outdir / "disposals.csv", disposals, columns=DISPOSAL_COLUMNS)
         write_csv(outdir / "summary_by_token.csv", summary_by_token, columns=SUMMARY_BY_TOKEN_COLUMNS)
         write_csv(outdir / "summary_overall.csv", summary_overall, columns=SUMMARY_OVERALL_COLUMNS)
+        if manual_review:
+            manual_cols = list(_normalize_rows(manual_review)[0].keys())
+            write_csv(outdir / "manual_review.csv", manual_review, columns=manual_cols)
+        if dust_ignored:
+            dust_cols = list(_normalize_rows(dust_ignored)[0].keys())
+            write_csv(outdir / "dust_ignored.csv", dust_ignored, columns=dust_cols)
+        if internal_transfers:
+            transfer_cols = list(_normalize_rows(internal_transfers)[0].keys())
+            write_csv(outdir / "internal_transfers.csv", internal_transfers, columns=transfer_cols)
     if fmt in ("parquet", "both"):
         write_parquet(outdir / "acquisitions.parquet", acquisitions, columns=ACQUISITION_COLUMNS)
         write_parquet(outdir / "disposals.parquet", disposals, columns=DISPOSAL_COLUMNS)

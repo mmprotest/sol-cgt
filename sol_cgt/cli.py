@@ -18,6 +18,7 @@ import typer
 import typer.core
 
 from .accounting.engine import AccountingEngine, AccountingResult
+from .accounting.eligibility import apply_accounting_policy
 from .accounting import methods as accounting_methods
 from .config import load_settings
 from .ingestion import fetch as fetch_mod
@@ -396,6 +397,10 @@ def compute(
         "--max-backfill-days",
         help="Maximum days to backfill when auto-backfill is enabled",
     ),
+    sol_dust_threshold: Decimal = typer.Option(Decimal("0.00001"), "--sol-dust-threshold", help="SOL dust threshold"),
+    aud_dust_threshold: Decimal = typer.Option(Decimal("0.01"), "--aud-dust-threshold", help="AUD dust threshold"),
+    include_dust: bool = typer.Option(False, "--include-dust", help="Include dust events"),
+    strict: bool = typer.Option(False, "--strict", help="Fail if unsafe taxable rows are detected"),
 ) -> None:
     _configure_logging()
     parsed_wallets = _collect_wallets(wallet)
@@ -499,8 +504,14 @@ def compute(
             fx_rate=price_provider.fx_rate,
         ),
     )
+    eligibility = apply_accounting_policy(
+        scoped_events,
+        sol_dust_threshold=sol_dust_threshold,
+        aud_dust_threshold=aud_dust_threshold,
+        include_dust=include_dust,
+    )
     result, stopped_for_missing = _run_accounting(
-        events=scoped_events,
+        events=eligibility.taxable_events,
         wallets=wallets,
         settings=settings,
         price_provider=price_provider,
@@ -617,6 +628,16 @@ def compute(
         ]
         lot_moves = [m for m in lot_moves if fy_period.start <= m.ts <= fy_period.end]
         warnings = [w for w in warnings if fy_period.start <= w.ts <= fy_period.end]
+    violations = [
+        lot for lot in acquisitions
+        if lot.unit_cost_aud == Decimal("0") and lot.source_type not in {"airdrop", "income", "gift"}
+    ]
+    if violations and strict:
+        raise typer.BadParameter(f"Unsafe zero-cost lots detected: {len(violations)}")
+    if violations and not strict:
+        blocked_ids = {lot.source_event for lot in violations}
+        acquisitions = [lot for lot in acquisitions if lot.source_event not in blocked_ids]
+        eligibility.manual_review.extend({"event_id": e.id, "reason": "zero_cost_lot_blocked", "timestamp": e.ts.isoformat(), "wallet": e.wallet} for e in scoped_events if e.id in blocked_ids)
     summary_by_token = summaries.summarize_by_token(disposals)
     summary_overall = summaries.summarize_overall(disposals)
     wallet_summary = summaries.summarize_by_wallet(disposals)
@@ -629,7 +650,7 @@ def compute(
     output_dir = outdir or Path("./reports") / ("combined" if len(wallets) > 1 else wallets[0])
     if fy_label:
         output_dir = output_dir / fy_label
-    formats.export_reports(output_dir, acquisitions, disposals, summary_by_token, summary_overall, fmt=fmt)
+    formats.export_reports(output_dir, acquisitions, disposals, summary_by_token, summary_overall, fmt=fmt, manual_review=eligibility.manual_review, dust_ignored=eligibility.dust_ignored, internal_transfers=lot_moves)
     if xlsx_path:
         for event in scoped_events:
             if event.fee_sol and "fee_aud" not in event.raw:
@@ -670,6 +691,8 @@ def compute(
             price_provider=price_provider,
         )
     console_report.render_summary(disposals, acquisitions, warnings)
+    typer.echo("Manual review items were excluded from taxable CGT totals.")
+    typer.echo(f"Excluded: internal_transfers={len(lot_moves)} dust_ignored={len(eligibility.dust_ignored)} manual_review={len(eligibility.manual_review)}")
     if stopped_for_missing:
         logger.error(
             "Missing lots detected (count=%s). Results may be incomplete until resolved.",

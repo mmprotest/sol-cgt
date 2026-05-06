@@ -66,9 +66,5 @@ def canonicalize_token_to_token(events: list[NormalizedEvent]) -> dict[str, Deci
             fee_sol=Decimal("0"),
         )
         events_list.append(canonical)
-        for ev in transfers:
-            ev.raw["swap_component"] = True
-            ev.raw["accounting_action"] = "component_of_token_to_token_swap"
-            counters["token_to_token_component_rows_excluded"] += 1
         counters["token_to_token_canonical_events_created"] += 1
     return counters

@@ -84,6 +84,13 @@ def _policy_reason(event: NormalizedEvent, sol_dust_threshold: Decimal, aud_dust
         return "external_transfer_in_unclassified"
     if event.kind == "transfer_out" and not event.raw.get("proceeds_hint_aud") and not event.raw.get("proceeds_aud"):
         return "external_transfer_out_unclassified"
+    if (
+        event.kind == "swap"
+        and event.raw.get("valuation_method") == "token_to_token_cost_basis_carry"
+        and event.base_token is not None
+        and event.quote_token is not None
+    ):
+        return None
     if event.kind == "swap" and event.quote_token is not None and not (event.raw.get("cost_hint_aud") or event.raw.get("cost_aud")):
         return "swap_missing_consideration_value"
 

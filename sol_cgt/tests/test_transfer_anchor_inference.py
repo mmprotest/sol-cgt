@@ -55,3 +55,12 @@ def test_inferred_rows_are_taxable_and_reporting_path_does_not_retag_components(
     result = apply_accounting_policy([target, anchor], sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
     assert any(e.id == target.id for e in result.taxable_events)
     assert target.raw.get("swap_component") == before
+
+
+def test_token_to_token_shape_ignores_tiny_native_sol_anchor_for_inference():
+    target = _ev("s5#0", "transfer_in", signature="s5", quote=TokenAmount(mint="UNSUPPORTED", decimals=6, amount_raw=1_000_000))
+    out_non_anchor = _ev("s5#1", "transfer_out", signature="s5", base=TokenAmount(mint="OTHER_NON_ANCHOR", decimals=6, amount_raw=2_000_000), raw={"proceeds_hint_aud": "20"})
+    tiny_sol = _ev("s5#2", "transfer_out", signature="s5", base=TokenAmount(mint="SOL", decimals=9, amount_raw=1000), raw={"proceeds_hint_aud": "0.01"})
+    valuation_module.valuate_events([target, out_non_anchor, tiny_sol], _ctx())
+    assert target.raw["valuation_method"] == "missing_token_price_no_counterparty_leg"
+    assert target.raw.get("cost_hint_aud") is None

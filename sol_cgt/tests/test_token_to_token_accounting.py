@@ -12,6 +12,10 @@ def _tok(m,a,d=0,s=None):
 
 
 def _ev(i,k,**kw):
+    if "base" in kw:
+        kw["base_token"] = kw.pop("base")
+    if "quote" in kw:
+        kw["quote_token"] = kw.pop("quote")
     return NormalizedEvent(id=i, ts=datetime(2024,1,1,tzinfo=timezone.utc), kind=k, wallet="W", fee_sol=Decimal("0"), raw=kw.pop("raw",{}), **kw)
 
 
@@ -46,3 +50,17 @@ def test_missing_outgoing_lots_stays_manual_review_and_components_not_excluded()
     engine=AccountingEngine(price_provider=SimplePriceProvider({}))
     res=engine.process(eligible.taxable_events,strict_lots=False)
     assert not any(a.token_mint=="B" for a in res.acquisitions)
+    canonical = next(e for e in eligible.taxable_events if e.kind == "swap")
+    assert canonical.raw.get("manual_review_reason") == "token_to_token_missing_outgoing_lots"
+    assert any(w.code == "missing_lot_history" and canonical.id in w.message for w in res.warnings)
+    assert out_ev.raw.get("swap_component") is None
+    assert in_ev.raw.get("swap_component") is None
+
+
+def test_components_not_excluded_before_canonical_processed():
+    out_ev = _ev("s2#0","transfer_out",base=_tok("A",5,s="A"),raw={"signature":"sig-processed"})
+    in_ev = _ev("s2#1","transfer_in",quote=_tok("B",20,s="B"),raw={"signature":"sig-processed"})
+    events=[out_ev,in_ev]
+    canonicalize_token_to_token(events)
+    assert out_ev.raw.get("swap_component") is None
+    assert in_ev.raw.get("swap_component") is None

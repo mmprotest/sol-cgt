@@ -142,7 +142,7 @@ class AudPriceProvider:
 
     def fx_rate(self, ts: datetime) -> Decimal:
         fx_day = utils.to_au_local(ts).date()
-        rate = fx_price_table.get_usd_aud_for_date_or_prior(fx_day)
+        rate = fx_price_table.get_usd_aud_for_date_or_prior(fx_day, max_fallback_days=10)
         if rate is None:
-            raise RuntimeError(f"USD/AUD FX rate unavailable in local cache for {fx_day.isoformat()}")
+            raise RuntimeError(f"USD/AUD FX rate unavailable in local cache for {fx_day.isoformat()} (no prior rate within 10 days)")
         return rate

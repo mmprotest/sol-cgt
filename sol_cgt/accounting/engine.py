@@ -100,7 +100,7 @@ class AccountingEngine:
         for event in sorted(events_list, key=lambda ev: (ev.ts, ev.id)):
             if event.raw.get("is_internal_transfer_duplicate"):
                 continue
-            if self._is_medium_confidence_inferred_transfer(event):
+            if self._is_medium_confidence_inferred_transfer_out(event):
                 event.raw["accounting_action"] = "manual_review"
                 event.raw.setdefault("manual_review_reason", "inferred_same_signature_anchor_medium_confidence")
                 continue
@@ -350,12 +350,12 @@ class AccountingEngine:
             and not event.raw.get("swap_component")
         )
 
-    def _is_medium_confidence_inferred_transfer(self, event: NormalizedEvent) -> bool:
+    def _is_medium_confidence_inferred_transfer_out(self, event: NormalizedEvent) -> bool:
         return (
             event.raw.get("source") == "helius_token_transfer"
             and event.raw.get("valuation_method") == "inferred_from_same_signature_anchor"
             and event.raw.get("valuation_confidence") == "medium"
-            and event.kind in {"transfer_in", "transfer_out"}
+            and event.kind == "transfer_out"
         )
 
     def _should_force_taxable_disposal(self, event: NormalizedEvent) -> bool:
@@ -372,6 +372,17 @@ class AccountingEngine:
         )
 
     def _should_force_taxable_acquisition(self, event: NormalizedEvent) -> bool:
+        if (
+            event.raw.get("source") == "helius_token_transfer"
+            and event.raw.get("valuation_method") == "inferred_from_same_signature_anchor"
+            and event.raw.get("valuation_confidence") == "medium"
+            and event.kind == "transfer_in"
+            and event.raw.get("cost_hint_aud") is not None
+        ):
+            return (
+                not event.raw.get("swap_component")
+                and event.raw.get("accounting_action") == "taxable_acquisition"
+            )
         if (
             event.raw.get("source") == "helius_token_transfer"
             and event.raw.get("valuation_method") == "inferred_from_same_signature_anchor"

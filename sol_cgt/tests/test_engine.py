@@ -195,11 +195,11 @@ def test_medium_confidence_inferred_transfer_out_is_not_forced_taxable_disposal(
     assert len(result.lot_moves) == 0
 
 
-def test_medium_confidence_inferred_transfer_in_is_not_forced_taxable_acquisition() -> None:
+def test_medium_confidence_inferred_transfer_in_with_cost_hint_is_forced_taxable_acquisition() -> None:
     ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
     event = _ev("a#0", "transfer_in", ts, "W1", quote=_token("ABC", 5, symbol="ABC"), counterparty="EXT", raw={"accounting_action": "taxable_acquisition", "cost_hint_aud": "55", "valuation_method": "inferred_from_same_signature_anchor", "valuation_confidence": "medium", "source": "helius_token_transfer"})
     result = AccountingEngine(price_provider=SimplePriceProvider({})).process([event], wallets=["W1"], external_lot_tracking=True)
-    assert len(result.acquisitions) == 0
+    assert len(result.acquisitions) == 1
     assert len(result.lot_moves) == 0
 
 
@@ -228,6 +228,76 @@ def test_swap_component_transfer_row_remains_excluded_from_taxable() -> None:
     assert engine.debug_counters["valued_transfer_group_acquisitions_accounted"] == 0
     assert len(result.acquisitions) == 1
     assert len(result.lot_moves) == 0
+
+
+def test_medium_confidence_inferred_transfer_in_without_cost_hint_is_not_forced_taxable() -> None:
+    ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    event = _ev(
+        "a#1",
+        "transfer_in",
+        ts,
+        "W1",
+        quote=_token("ABC", 5, symbol="ABC"),
+        counterparty="EXT",
+        raw={
+            "accounting_action": "taxable_acquisition",
+            "valuation_method": "inferred_from_same_signature_anchor",
+            "valuation_confidence": "medium",
+            "source": "helius_token_transfer",
+        },
+    )
+    result = AccountingEngine(price_provider=SimplePriceProvider({})).process([event], wallets=["W1"], external_lot_tracking=True)
+    assert len(result.acquisitions) == 1
+    assert len(result.lot_moves) == 0
+    assert result.acquisitions[0].unit_cost_aud == Decimal("0")
+
+
+def test_inferred_transfer_in_lot_is_consumed_and_inferred_transfer_out_is_not_disposal() -> None:
+    ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    inferred_in = _ev(
+        "i#0",
+        "transfer_in",
+        ts,
+        "W1",
+        quote=_token("ABC", 5, symbol="ABC"),
+        counterparty="EXT",
+        raw={
+            "accounting_action": "taxable_acquisition",
+            "cost_hint_aud": "55",
+            "valuation_method": "inferred_from_same_signature_anchor",
+            "valuation_confidence": "medium",
+            "source": "helius_token_transfer",
+        },
+    )
+    inferred_out = _ev(
+        "o#0",
+        "transfer_out",
+        ts.replace(hour=1),
+        "W1",
+        base=_token("ABC", 2, symbol="ABC"),
+        counterparty="EXT",
+        raw={
+            "accounting_action": "taxable_disposal",
+            "proceeds_hint_aud": "22",
+            "valuation_method": "inferred_from_same_signature_anchor",
+            "valuation_confidence": "medium",
+            "source": "helius_token_transfer",
+        },
+    )
+    swap = _ev(
+        "sw2#0",
+        "swap",
+        ts.replace(hour=2),
+        "W1",
+        base=_token("ABC", 5, symbol="ABC"),
+        quote=_token("XYZ", 10, symbol="XYZ"),
+        raw={"proceeds_hint_aud": "100", "cost_hint_aud": "100", "valuation_method": "canonical_swap"},
+    )
+
+    result = AccountingEngine(price_provider=SimplePriceProvider({})).process([inferred_in, inferred_out, swap], wallets=["W1"])
+    assert len(result.disposals) == 1
+    assert result.disposals[0].event_id == "sw2#0"
+    assert result.disposals[0].cost_base_aud == Decimal("55.00")
 
 
 def test_partial_missing_lot_disposal_processes_available_amount() -> None:

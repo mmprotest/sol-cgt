@@ -149,6 +149,30 @@ def _disposal_rows(disposals: Sequence[DisposalRecord]) -> list[dict[str, str]]:
     return rows
 
 
+
+
+def _internal_transfer_rows(events: Sequence[NormalizedEvent]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for event in sorted(events, key=lambda ev: (ev.ts, ev.raw.get("signature") or ev.id, ev.id)):
+        if not event.raw.get("is_internal_transfer") or event.raw.get("is_internal_transfer_duplicate"):
+            continue
+        token = event.base_token or event.quote_token
+        rows.append(
+            {
+                "timestamp_local": utils.to_au_local(event.ts).isoformat(),
+                "date_local": utils.to_au_local(event.ts).date().isoformat(),
+                "signature": event.raw.get("signature") or event.id.split("#")[0],
+                "from_wallet": event.raw.get("from_wallet") or "",
+                "to_wallet": event.raw.get("to_wallet") or "",
+                "mint": (token.mint if token else event.raw.get("asset_mint") or ""),
+                "symbol": token.symbol if token and token.symbol else "",
+                "amount": event.raw.get("amount") or str(token.amount if token else Decimal("0")),
+                "fee_aud": str(event.raw.get("fee_aud", "0")),
+                "notes": event.raw.get("internal_transfer_reason") or "",
+            }
+        )
+    return rows
+
 def _lot_move_rows(lot_moves: Sequence[LotMoveRecord]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for move in lot_moves:
@@ -242,6 +266,15 @@ def export_xlsx(
             wallet_sheet.append([row.get(col) for col in WALLET_SUMMARY_COLUMNS])
         _apply_header_style(wallet_sheet)
         _auto_width(wallet_sheet)
+
+    internal_sheet = workbook.create_sheet("internal_transfers")
+    internal_rows = _internal_transfer_rows(events)
+    if internal_rows:
+        internal_sheet.append(list(internal_rows[0].keys()))
+        for row in internal_rows:
+            internal_sheet.append(list(row.values()))
+        _apply_header_style(internal_sheet)
+        _auto_width(internal_sheet)
 
     lot_moves_sheet = workbook.create_sheet("Lot moves")
     move_rows = _lot_move_rows(lot_moves)

@@ -9,6 +9,67 @@ from typing import Deque, Dict, Iterable, List, Optional, Tuple
 from ..types import NormalizedEvent
 
 
+def normalize_wallet_address(value: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def classify_internal_transfers(
+    events: Iterable[NormalizedEvent], wallets: Iterable[str]
+) -> dict[str, int]:
+    wallet_set = {w for w in (normalize_wallet_address(wallet) for wallet in wallets) if w}
+    internal_keys: set[tuple[str, str, str, str, str, str]] = set()
+    internal_count = 0
+    external_in = 0
+    external_out = 0
+    for event in events:
+        if event.kind not in {"transfer_in", "transfer_out"}:
+            continue
+        from_wallet = normalize_wallet_address(
+            event.raw.get("transfer_from_wallet") or event.raw.get("source_wallet")
+        )
+        to_wallet = normalize_wallet_address(
+            event.raw.get("transfer_to_wallet") or event.raw.get("destination_wallet")
+        )
+        mint = (event.base_token.mint if event.base_token else (event.quote_token.mint if event.quote_token else ""))
+        amount = str(event.base_token.amount if event.base_token else (event.quote_token.amount if event.quote_token else Decimal("0")))
+        signature = str(event.raw.get("signature") or event.id.split("#")[0])
+        dedupe_key = (signature, mint, amount, from_wallet or "", to_wallet or "", event.ts.isoformat())
+        is_internal = bool(from_wallet and to_wallet and from_wallet in wallet_set and to_wallet in wallet_set)
+        if is_internal:
+            event.kind = "transfer_internal"
+            event.tags.add("self_transfer")
+            event.raw.update(
+                {
+                    "is_internal_transfer": True,
+                    "internal_transfer_reason": "both endpoints are provided wallets",
+                    "from_wallet": from_wallet,
+                    "to_wallet": to_wallet,
+                    "asset_mint": mint,
+                    "amount": amount,
+                }
+            )
+            if dedupe_key in internal_keys:
+                event.tags.add("internal_transfer_duplicate")
+                event.raw["is_internal_transfer_duplicate"] = True
+            else:
+                internal_keys.add(dedupe_key)
+                internal_count += 1
+            continue
+        if event.kind == "transfer_in":
+            external_in += 1
+        else:
+            external_out += 1
+    return {
+        "owned_wallets": len(wallet_set),
+        "internal_transfers": internal_count,
+        "external_transfer_in": external_in,
+        "external_transfer_out": external_out,
+    }
+
+
 class TransferMatch:
     __slots__ = ("out_event", "in_event")
 

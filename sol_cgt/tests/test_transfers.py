@@ -174,3 +174,31 @@ def test_detect_self_transfers_signature_without_counterparty() -> None:
     assert len(matches) == 1
     assert "self_transfer" in out_event.tags
     assert "self_transfer" in in_event.tags
+
+
+def test_classify_internal_transfers_marks_and_deduplicates() -> None:
+    from sol_cgt.reconciliation.transfers import classify_internal_transfers
+
+    ts = datetime(2023, 1, 1, 12, tzinfo=timezone.utc)
+    out_event = make_transfer("sig1#0", "transfer_out", "W1", 1_000_000, ts, signature="sig1", counterparty="W2")
+    out_event.raw.update({"transfer_from_wallet": "W1", "transfer_to_wallet": "W2"})
+    in_event = make_transfer("sig1#1", "transfer_in", "W2", 1_000_000, ts, signature="sig1", counterparty="W1")
+    in_event.raw.update({"transfer_from_wallet": "W1", "transfer_to_wallet": "W2"})
+
+    stats = classify_internal_transfers([out_event, in_event], wallets=["W1", "W2"])
+    assert stats["internal_transfers"] == 1
+    assert out_event.kind == "transfer_internal"
+    assert in_event.kind == "transfer_internal"
+    assert in_event.raw.get("is_internal_transfer_duplicate") is True
+
+
+def test_classify_internal_transfers_external_remains_external() -> None:
+    from sol_cgt.reconciliation.transfers import classify_internal_transfers
+
+    ts = datetime(2023, 1, 1, 12, tzinfo=timezone.utc)
+    event = make_transfer("sig2#0", "transfer_in", "W1", 1_000_000, ts, signature="sig2", counterparty="EXT")
+    event.raw.update({"transfer_from_wallet": "EXT", "transfer_to_wallet": "W1"})
+    stats = classify_internal_transfers([event], wallets=["W1", "W2"])
+    assert stats["internal_transfers"] == 0
+    assert stats["external_transfer_in"] == 1
+    assert event.kind == "transfer_in"

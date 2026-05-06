@@ -192,33 +192,67 @@ def _run_accounting(
         return partial, True
 
 
-def _ensure_cache_coverage(wallets: list[str], *, gte_time: Optional[int], lte_time: Optional[int], fetch: bool, settings) -> bool:
+def _ensure_cache_coverage(wallets: list[str], *, gte_time: Optional[int], lte_time: Optional[int], fetch: bool, settings, refresh_raw_cache: bool = False) -> tuple[bool, dict[str, fetch_mod.CacheCoverage]]:
     complete = True
+    coverage_by_wallet: dict[str, fetch_mod.CacheCoverage] = {}
     for addr in wallets:
-        cache_min, cache_max = fetch_mod.cache_time_bounds(addr)
-        has_data = cache_min is not None and cache_max is not None
-        covers_start = gte_time is None or (has_data and cache_min <= gte_time)
-        covers_end = lte_time is None or (has_data and cache_max >= lte_time)
-        coverage = "complete" if (has_data and covers_start and covers_end) else "incomplete"
-        logger.info("wallet=%s cache_min=%s cache_max=%s requested_start=%s requested_end=%s coverage=%s", addr, cache_min, cache_max, gte_time, lte_time, coverage)
-        if coverage == "complete":
-            continue
-        complete = False
-        if not fetch:
-            continue
-        asyncio.run(
-            fetch_mod.fetch_wallet(
-                addr,
-                api_key=settings.api_keys.helius,
-                base_url=settings.helius_enhanced_base_url,
-                limit=settings.helius_tx_limit,
-                max_pages=settings.helius_max_pages,
-                gte_time=gte_time,
-                lte_time=lte_time,
-                append=True,
-            )
-        )
-    return complete
+        attempts = 0
+        while attempts < 3:
+            attempts += 1
+            coverage = fetch_mod.inspect_raw_cache_coverage(addr, gte_time, lte_time)
+            coverage_by_wallet[addr] = coverage
+            logger.info("Raw cache coverage wallet=%s cache_path=%s count=%s cache_min=%s cache_max=%s requested_start=%s requested_end=%s complete=%s", addr, coverage.cache_path, coverage.raw_tx_count, coverage.cache_min_timestamp, coverage.cache_max_timestamp, coverage.requested_start, coverage.requested_end, coverage.coverage_complete)
+            if coverage.coverage_complete and not refresh_raw_cache:
+                break
+            if not fetch:
+                break
+            ranges = coverage.missing_ranges or []
+            if refresh_raw_cache and gte_time is not None and lte_time is not None:
+                ranges = [{"start": gte_time, "end": lte_time, "reason": "refresh"}]
+            if not ranges:
+                break
+            had_additions = False
+            for missing in ranges:
+                start = int(missing["start"])
+                end = int(missing["end"])
+                reason = str(missing.get("reason", "unknown"))
+                logger.info("Raw cache missing range wallet=%s start=%s end=%s reason=%s", addr, start, end, reason)
+                before_count = len(fetch_mod.load_cached(addr))
+                asyncio.run(
+                    fetch_mod.fetch_wallet(
+                        addr,
+                        api_key=settings.api_keys.helius,
+                        base_url=settings.helius_enhanced_base_url,
+                        limit=settings.helius_tx_limit,
+                        max_pages=settings.helius_max_pages,
+                        gte_time=start,
+                        lte_time=end,
+                        append=True,
+                    )
+                )
+                after_count = len(fetch_mod.load_cached(addr))
+                added = max(0, after_count - before_count)
+                had_additions = had_additions or added > 0
+                logger.info("Raw cache fetch complete wallet=%s added=%s total=%s", addr, added, after_count)
+            if not had_additions:
+                break
+        coverage = fetch_mod.inspect_raw_cache_coverage(addr, gte_time, lte_time)
+        coverage_by_wallet[addr] = coverage
+        logger.info("Raw cache coverage verified wallet=%s complete=%s count=%s cache_min=%s cache_max=%s", addr, coverage.coverage_complete, coverage.raw_tx_count, coverage.cache_min_timestamp, coverage.cache_max_timestamp)
+        if not coverage.coverage_complete:
+            complete = False
+            if not fetch:
+                logger.error(
+                    "Incomplete raw cache coverage wallet=%s cache_path=%s cache_min=%s cache_max=%s requested_start=%s requested_end=%s missing_ranges=%s rerun without --no-fetch or refresh cache",
+                    addr,
+                    coverage.cache_path,
+                    coverage.cache_min_timestamp,
+                    coverage.cache_max_timestamp,
+                    coverage.requested_start,
+                    coverage.requested_end,
+                    coverage.missing_ranges,
+                )
+    return complete, coverage_by_wallet
 
 
 def _collect_wallets(wallet_values: Optional[List[str]]) -> List[str]:
@@ -401,6 +435,7 @@ def compute(
         "--fetch/--no-fetch",
         help="Fetch txs from Helius if cache is empty or missing",
     ),
+    refresh_raw_cache: bool = typer.Option(False, "--refresh-raw-cache", help="Refetch requested raw transaction window even if cache appears complete"),
     prefetch_mints: bool = typer.Option(
         True,
         "--prefetch-mints/--no-prefetch-mints",
@@ -456,11 +491,11 @@ def compute(
     lte_time = int(fy_period.end.timestamp()) if fy_period else None
     rpc_url = _resolve_rpc_url(settings)
     raw_by_wallet: dict[str, list[dict]] = {}
-    cache_coverage_complete = _ensure_cache_coverage(wallets, gte_time=gte_time, lte_time=lte_time, fetch=fetch, settings=settings)
+    cache_coverage_complete, coverage_by_wallet = _ensure_cache_coverage(wallets, gte_time=gte_time, lte_time=lte_time, fetch=fetch, settings=settings, refresh_raw_cache=refresh_raw_cache)
     if not cache_coverage_complete and not fetch:
-        raise typer.BadParameter("Cache coverage is incomplete for requested period and --no-fetch was specified.")
+        raise typer.BadParameter("Cache coverage is incomplete for requested period and --no-fetch was specified. See logs for wallet cache min/max and missing ranges.")
     for addr in wallets:
-        if not fetch_mod.cache_has_data(addr):
+        if not coverage_by_wallet.get(addr) or coverage_by_wallet[addr].raw_tx_count == 0:
             if fetch:
                 asyncio.run(
                     fetch_mod.fetch_wallet(
@@ -696,9 +731,16 @@ def compute(
     output_dir = outdir or Path("./reports") / ("combined" if len(wallets) > 1 else wallets[0])
     if fy_label:
         output_dir = output_dir / fy_label
+    incomplete_wallets = [w for w, c in coverage_by_wallet.items() if not c.coverage_complete]
     overview_row = {
         "accounting_complete": not bool(excluded_events or missing_lot_issues),
         "cache_coverage_complete": cache_coverage_complete,
+        "cache_coverage_checked": True,
+        "wallets_with_incomplete_cache": ",".join(incomplete_wallets),
+        "raw_tx_count_by_wallet": utils.json_dumps({w: c.raw_tx_count for w, c in coverage_by_wallet.items()}),
+        "cache_min_by_wallet": utils.json_dumps({w: c.cache_min_timestamp for w, c in coverage_by_wallet.items()}),
+        "cache_max_by_wallet": utils.json_dumps({w: c.cache_max_timestamp for w, c in coverage_by_wallet.items()}),
+        "missing_ranges_by_wallet": utils.json_dumps({w: c.missing_ranges for w, c in coverage_by_wallet.items()}),
         "taxable_events_processed": len(eligibility.taxable_events),
         "manual_review_events": len(eligibility.manual_review),
         "missing_lot_events": len(missing_lot_issues),

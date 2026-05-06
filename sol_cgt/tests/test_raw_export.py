@@ -9,8 +9,25 @@ from sol_cgt.config import APIKeys, AppSettings
 def test_compute_writes_combined_raw_transactions_before_price_warmup(monkeypatch, tmp_path: Path) -> None:
     settings = AppSettings(wallets=["wallet1", "wallet2"], api_keys=APIKeys(helius="key"))
     monkeypatch.setattr(cli, "load_settings", lambda *args, **kwargs: settings)
-    monkeypatch.setattr(cli.fetch_mod, "cache_has_data", lambda _: True)
     monkeypatch.setattr(cli.fetch_mod, "load_cached", lambda w: [{"signature": f"{w}-sig", "blockTime": 1}])
+    monkeypatch.setattr(
+        cli.fetch_mod,
+        "inspect_raw_cache_coverage",
+        lambda wallet, start, end: cli.fetch_mod.CacheCoverage(
+            wallet=wallet,
+            cache_path=f"{wallet}.jsonl",
+            has_cache=True,
+            raw_tx_count=1,
+            cache_min_timestamp=start,
+            cache_max_timestamp=end,
+            requested_start=start,
+            requested_end=end,
+            covers_start=True,
+            covers_end=True,
+            coverage_complete=True,
+            missing_ranges=[],
+        ),
+    )
 
     order: list[str] = []
 

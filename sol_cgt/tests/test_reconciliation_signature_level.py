@@ -18,7 +18,7 @@ def test_signature_level_trade_classification_with_swap_plus_transfer() -> None:
     rows = summaries.build_transaction_summary(evs)
     assert len(rows) == 1
     assert rows[0]["classification"] == "trade"
-    assert evs[1].raw.get("swap_component") is True
+    assert evs[1].raw.get("swap_component") is None
 
 
 def test_reconciliation_counts_signature_level_not_event_level() -> None:

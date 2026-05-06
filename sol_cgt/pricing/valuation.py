@@ -67,6 +67,8 @@ def valuate_events(events: Iterable[NormalizedEvent], ctx: ValuationContext) -> 
         if e.raw.get("valuation_method") == "missing_token_price_no_counterparty_leg"
     )
     ambiguous = sum(1 for e in events_list if e.raw.get("valuation_method") == "ambiguous_multi_token_swap")
+    inferred_transfer_swap_count = sum(1 for e in events_list if e.raw.get("source") == "inferred_transfer_swap")
+    inferred_transfer_swap_component_events = sum(1 for e in events_list if e.raw.get("accounting_action") == "component_of_inferred_swap")
     LOGGER.info("Inferred swap valuations from SOL legs count=%s", inferred)
     missing_mints = sorted(
         {
@@ -77,6 +79,9 @@ def valuate_events(events: Iterable[NormalizedEvent], ctx: ValuationContext) -> 
     )
     LOGGER.info("Missing token prices without counterparty leg count=%s unique_mints=%s", missing_no_leg, len(missing_mints))
     LOGGER.info("Ambiguous swap valuations count=%s", ambiguous)
+    LOGGER.info("inferred_transfer_swap_count=%s", inferred_transfer_swap_count)
+    LOGGER.info("inferred_transfer_swap_component_events=%s", inferred_transfer_swap_component_events)
+    LOGGER.info("remaining_missing_token_price_no_counterparty_leg=%s", missing_no_leg)
     return ctx.warnings
 
 

@@ -16,6 +16,10 @@ from ..types import NormalizedEvent, TokenAmount
 
 LAMPORTS_PER_SOL = Decimal("1000000000")
 SOL_MINT = "SOL"
+WSOL_MINT = "So11111111111111111111111111111111111111112"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+ANCHOR_MINTS = {SOL_MINT, WSOL_MINT, USDC_MINT, USDT_MINT}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -227,6 +231,106 @@ async def _build_swap_legs(
 def _attach_decimal_warning(raw: dict, token: TokenAmount, decimal_warning_mints: set[str]) -> None:
     if token.mint in decimal_warning_mints:
         raw["decimals_defaulted_mints"] = sorted({token.mint} | set(raw.get("decimals_defaulted_mints", [])))
+
+
+def _canonicalize_transfer_group_as_swap_if_possible(
+    tx_events: list[NormalizedEvent],
+    signature: str,
+    wallet: str,
+) -> list[NormalizedEvent]:
+    has_helius_swap = any(event.raw.get("source") == "helius_swap" for event in tx_events)
+    if has_helius_swap:
+        for event in tx_events:
+            if event.kind in {"transfer_in", "transfer_out"}:
+                event.raw["swap_component"] = True
+                event.raw["accounting_action"] = "component_of_helius_swap"
+                event.raw["classification"] = "swap_component"
+        return tx_events
+
+    net_by_mint: dict[str, Decimal] = {}
+    token_meta: dict[str, TokenAmount] = {}
+    for event in tx_events:
+        if event.wallet != wallet or event.kind not in {"transfer_in", "transfer_out"}:
+            continue
+        token = event.base_token or event.quote_token
+        if token is None:
+            continue
+        signed = token.amount if event.kind == "transfer_in" else -token.amount
+        net_by_mint[token.mint] = net_by_mint.get(token.mint, Decimal("0")) + signed
+        token_meta.setdefault(token.mint, token)
+
+    non_zero = {mint: amt for mint, amt in net_by_mint.items() if amt != 0}
+    non_anchor = {mint: amt for mint, amt in non_zero.items() if mint not in ANCHOR_MINTS}
+    anchor = {mint: amt for mint, amt in non_zero.items() if mint in ANCHOR_MINTS}
+    if len(non_anchor) != 1 or not anchor:
+        return tx_events
+
+    anchor_aud = Decimal("0")
+    usable_anchor = False
+    for event in tx_events:
+        if event.kind not in {"transfer_in", "transfer_out"}:
+            continue
+        token = event.base_token or event.quote_token
+        if token is None or token.mint not in ANCHOR_MINTS:
+            continue
+        hint = event.raw.get("proceeds_hint_aud") if event.kind == "transfer_out" else event.raw.get("cost_hint_aud")
+        if hint is None:
+            continue
+        usable_anchor = True
+        anchor_aud += Decimal(str(hint)) if event.kind == "transfer_out" else -Decimal(str(hint))
+    if not usable_anchor or anchor_aud == 0:
+        return tx_events
+
+    non_anchor_mint, non_anchor_delta = next(iter(non_anchor.items()))
+    if non_anchor_delta > 0 and anchor_aud > 0:
+        direction = "in"
+    elif non_anchor_delta < 0 and anchor_aud < 0:
+        direction = "out"
+    else:
+        return tx_events
+
+    for event in tx_events:
+        if event.kind in {"transfer_in", "transfer_out"}:
+            event.raw["swap_component"] = True
+            event.raw["accounting_action"] = "component_of_inferred_swap"
+            event.raw["classification"] = "swap_component"
+
+    ref_assets = [mint for mint in anchor.keys() if anchor[mint] != 0]
+    valuation_reference_asset = ref_assets[0] if len(ref_assets) == 1 else "mixed_anchor"
+    raw_payload = {
+        "source": "inferred_transfer_swap",
+        "signature": signature,
+        "swap_direction": direction,
+        "valuation_method": "inferred_from_transfer_group_anchor",
+        "valuation_reference_asset": valuation_reference_asset,
+        "valuation_confidence": "medium",
+    }
+    if len(ref_assets) == 1:
+        raw_payload["valuation_reference_amount"] = str(anchor[ref_assets[0]])
+    token = token_meta[non_anchor_mint]
+    normalized = TokenAmount(
+        mint=token.mint,
+        symbol=token.symbol,
+        decimals=token.decimals,
+        amount_raw=_amount_raw_from_decimal(abs(non_anchor_delta), token.decimals),
+    )
+    if direction == "in":
+        raw_payload["cost_hint_aud"] = str(anchor_aud.copy_abs())
+    else:
+        raw_payload["proceeds_hint_aud"] = str(anchor_aud.copy_abs())
+    inferred = NormalizedEvent(
+        id=f"{signature}:{wallet}#inferred_swap",
+        ts=tx_events[0].ts,
+        kind="swap",
+        base_token=normalized if direction == "out" else None,
+        quote_token=normalized if direction == "in" else None,
+        fee_sol=Decimal("0"),
+        wallet=wallet,
+        counterparty=None,
+        raw=raw_payload,
+        tags=set(),
+    )
+    return [*tx_events, inferred]
 
 def _collect_missing_mints(raw_txs: Iterable[dict]) -> set[str]:
     missing: set[str] = set()
@@ -523,6 +627,8 @@ async def normalize_wallet_events(
                     tags=set(),
                 )
             )
+
+        tx_events = _canonicalize_transfer_group_as_swap_if_possible(tx_events, signature, wallet)
 
         fee_assigned = False
         for event in tx_events:

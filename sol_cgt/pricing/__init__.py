@@ -1,9 +1,7 @@
 """AUD price provider with timestamp-aware pricing."""
 from __future__ import annotations
 
-import asyncio
 import logging
-import threading
 from datetime import datetime
 from decimal import Decimal
 from functools import lru_cache
@@ -11,7 +9,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from .. import utils
-from ..providers import fx_rates, rba_fx, sol_price_table
+from ..providers import fx_price_table, sol_price_table
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -144,36 +142,7 @@ class AudPriceProvider:
 
     def fx_rate(self, ts: datetime) -> Decimal:
         fx_day = utils.to_au_local(ts).date()
-        try:
-            if self.fx_source == "rba":
-                return rba_fx.usd_to_aud_rate(fx_day)
-            return _run_async(fx_rates.usd_to_aud_rate(fx_day))
-        except Exception:
-            return rba_fx.usd_to_aud_rate(fx_day)
-
-
-def _run_async(coro):
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    result_container: dict[str, Decimal] = {}
-    error_container: dict[str, BaseException] = {}
-
-    def runner() -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result_container["result"] = loop.run_until_complete(coro)
-        except BaseException as exc:  # pragma: no cover - defensive
-            error_container["error"] = exc
-        finally:
-            loop.close()
-
-    thread = threading.Thread(target=runner)
-    thread.start()
-    thread.join()
-    if "error" in error_container:
-        raise error_container["error"]
-    return result_container["result"]
+        rate = fx_price_table.get_usd_aud_for_date_or_prior(fx_day)
+        if rate is None:
+            raise RuntimeError(f"USD/AUD FX rate unavailable in local cache for {fx_day.isoformat()}")
+        return rate

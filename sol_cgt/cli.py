@@ -31,7 +31,7 @@ from .types import MissingLotIssue, NormalizedEvent
 from . import utils
 from .utils import australian_financial_year_bounds, parse_local_date
 from .providers import jupiter as jupiter_provider
-from .providers import sol_price_table
+from .providers import fx_price_table, sol_price_table
 
 _orig_option_init = typer.core.TyperOption.__init__
 logger = logging.getLogger(__name__)
@@ -244,16 +244,17 @@ def _json_default(value):
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def _export_raw_transactions(xlsx_path: Path, wallet: str, fy_label: Optional[str], source: str, raw_items: list[dict]) -> Path:
+def _export_raw_transactions(xlsx_path: Path, wallets: list[str], fy_label: Optional[str], source: str, raw_by_wallet: dict[str, list[dict]]) -> Path:
     output_dir = xlsx_path.parent
     output_dir.mkdir(parents=True, exist_ok=True)
+    total_count = sum(len(items) for items in raw_by_wallet.values())
     payload = {
-        "wallet": wallet,
+        "wallets": wallets,
         "fy": fy_label or "all",
-        "raw_txs_count": len(raw_items),
+        "raw_txs_count": total_count,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "source": source,
-        "transactions": raw_items,
+        "transactions_by_wallet": raw_by_wallet,
     }
     export_path = output_dir / "raw_transactions.json"
     pretty_path = output_dir / "raw_transactions.pretty.json"
@@ -426,12 +427,13 @@ def compute(
                 continue
         raw_items = fetch_mod.load_cached(addr)
         raw_by_wallet[addr] = raw_items
-        if xlsx_path:
-            try:
-                export_path = _export_raw_transactions(xlsx_path, addr, fy_label, "helius-cache", raw_items)
-            except Exception as exc:
-                raise RuntimeError(f"Failed to export raw transactions for wallet={addr} path={xlsx_path.parent}: {exc}") from exc
-            logger.info("Raw transactions exported path=%s count=%s", export_path, len(raw_items))
+
+    if xlsx_path and raw_by_wallet:
+        try:
+            export_path = _export_raw_transactions(xlsx_path, wallets, fy_label, "helius-cache", raw_by_wallet)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to export raw transactions path={xlsx_path.parent}: {exc}") from exc
+        logger.info("Raw transactions exported path=%s wallets=%s count=%s", export_path, len(raw_by_wallet), sum(len(v) for v in raw_by_wallet.values()))
 
     events, kind_counts = _load_and_normalize(
         wallets,
@@ -450,6 +452,9 @@ def compute(
         cache_path = asyncio.run(sol_price_table.ensure_sol_usd_daily_prices(start_day, end_day))
         rows, _, _ = sol_price_table.cache_stats(cache_path)
         logger.info("SOL/USD daily price table ready path=%s start=%s end=%s rows=%s source=kraken", cache_path, start_day.isoformat(), end_day.isoformat(), rows)
+        fx_cache_path = asyncio.run(fx_price_table.ensure_usd_aud_daily_rates(start_day, end_day))
+        fx_rows, _, _ = fx_price_table.cache_stats(fx_cache_path)
+        logger.info("USD/AUD daily FX table ready path=%s start=%s end=%s rows=%s source=frankfurter", fx_cache_path, start_day.isoformat(), end_day.isoformat(), fx_rows)
     usd_provider = TimestampPriceProvider()
     price_provider = AudPriceProvider(
         fx_source=settings.fx_source,

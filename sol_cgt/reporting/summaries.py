@@ -124,17 +124,21 @@ def build_transaction_summary(events: Iterable[NormalizedEvent]) -> list[dict[st
         kinds = {e.kind for e in sig_events}
         has_trade = "swap" in kinds or any("swap" in str(e.raw.get("classification", "")) for e in sig_events)
         if has_trade:
+            for event in sig_events:
+                if event.kind in {"transfer_in", "transfer_out", "transfer_internal"}:
+                    event.raw["swap_component"] = True
+        if has_trade:
             classification = "trade"
-        elif any(e.raw.get("accounting_action") == "manual_review" for e in sig_events):
+        elif any(e.raw.get("accounting_action") == "manual_review" or e.raw.get("manual_review_reason") for e in sig_events):
             classification = "mixed_or_ambiguous"
-        elif kinds == {"transfer_in"}:
+        elif kinds == {"transfer_in"} and not any(e.raw.get("is_internal_transfer") for e in sig_events):
             classification = "deposit"
-        elif kinds == {"transfer_out"}:
+        elif kinds == {"transfer_out"} and not any(e.raw.get("is_internal_transfer") for e in sig_events):
             classification = "withdrawal"
         elif "transfer_internal" in kinds or any(e.raw.get("is_internal_transfer") for e in sig_events):
             classification = "internal_transfer"
         elif all((e.base_token is None and e.quote_token is None and e.fee_sol > 0) for e in sig_events):
-            classification = "fee_only"
+            classification = "dust_or_noise"
         elif all(e.raw.get("accounting_action") == "ignore_dust" for e in sig_events):
             classification = "dust_or_noise"
         elif len(kinds) > 1:
@@ -152,3 +156,26 @@ def build_transaction_summary(events: Iterable[NormalizedEvent]) -> list[dict[st
             }
         )
     return rows
+
+
+def build_reconciliation_summary(raw_signatures: set[str], transaction_summary: list[dict[str, object]], events: Iterable[NormalizedEvent]) -> list[dict[str, object]]:
+    tx_sigs = {str(row.get("signature")) for row in transaction_summary}
+    event_sigs = {str((event.raw.get("signature") or event.id.split("#")[0])) for event in events}
+    counts: dict[str, int] = defaultdict(int)
+    for row in transaction_summary:
+        counts[str(row.get("classification") or "unknown")] += 1
+    return [{
+        "raw_signatures_loaded": len(raw_signatures),
+        "normalized_signatures_produced": len(tx_sigs),
+        "raw_signatures_with_zero_normalized_events": len(raw_signatures - tx_sigs),
+        "normalized_signatures_missing_from_raw_source": len(tx_sigs - raw_signatures),
+        "signatures_with_multiple_normalized_rows": sum(1 for row in transaction_summary if int(row.get("event_count") or 0) > 1),
+        "trade": counts.get("trade", 0),
+        "deposit": counts.get("deposit", 0),
+        "withdrawal": counts.get("withdrawal", 0),
+        "internal_transfer": counts.get("internal_transfer", 0),
+        "dust_or_noise": counts.get("dust_or_noise", 0),
+        "manual_review": sum(1 for row in transaction_summary if row.get("review_status") == "needs_review"),
+        "mixed_or_ambiguous": counts.get("mixed_or_ambiguous", 0),
+        "normalized_event_signatures_seen": len(event_sigs),
+    }]

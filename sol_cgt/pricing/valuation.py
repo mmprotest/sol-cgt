@@ -12,6 +12,12 @@ from ..types import NormalizedEvent, WarningRecord
 from . import STABLECOIN_MINTS, TimestampPriceProvider, WSOL_MINT, normalize_mint
 
 SOL_MINT = "SOL"
+TRANSFER_ANCHOR_MINTS = {
+    SOL_MINT,
+    WSOL_MINT,
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -61,6 +67,7 @@ def valuate_events(events: Iterable[NormalizedEvent], ctx: ValuationContext) -> 
         else:
             result = valuate_event(event, ctx)
         _attach_result(event, result, ctx)
+    inferred_same_signature_anchor_values = _infer_missing_transfer_values_from_same_signature_anchors(events_list, ctx)
     inferred = sum(1 for e in events_list if e.raw.get("valuation_method") == "inferred_from_sol_leg")
     missing_no_leg = sum(
         1 for e in events_list
@@ -81,6 +88,7 @@ def valuate_events(events: Iterable[NormalizedEvent], ctx: ValuationContext) -> 
     LOGGER.info("Ambiguous swap valuations count=%s", ambiguous)
     LOGGER.info("inferred_transfer_swap_count=%s", inferred_transfer_swap_count)
     LOGGER.info("inferred_transfer_swap_component_events=%s", inferred_transfer_swap_component_events)
+    LOGGER.info("inferred_same_signature_anchor_values=%s", inferred_same_signature_anchor_values)
     LOGGER.info("remaining_missing_token_price_no_counterparty_leg=%s", missing_no_leg)
     return ctx.warnings
 
@@ -343,3 +351,93 @@ def _unix_minute_bucket(ts: datetime) -> int:
 def _mark_unpriced(event: NormalizedEvent) -> None:
     event.raw["unpriced"] = True
     event.tags.add("unpriced")
+
+
+def _infer_missing_transfer_values_from_same_signature_anchors(events_list: list[NormalizedEvent], ctx: ValuationContext) -> int:
+    grouped: dict[tuple[str, str], list[NormalizedEvent]] = {}
+    for event in events_list:
+        signature = event.raw.get("signature")
+        if not signature:
+            continue
+        grouped.setdefault((signature, event.wallet), []).append(event)
+
+    inferred_count = 0
+    normalized_anchor_mints = {normalize_mint(m) for m in TRANSFER_ANCHOR_MINTS}
+    for (_signature, _wallet), group in grouped.items():
+        unpriced: list[NormalizedEvent] = []
+        anchors_out_preferred: list[tuple[NormalizedEvent, Decimal]] = []
+        anchors_out_native: list[tuple[NormalizedEvent, Decimal]] = []
+        anchors_in_preferred: list[tuple[NormalizedEvent, Decimal]] = []
+        anchors_in_native: list[tuple[NormalizedEvent, Decimal]] = []
+        for event in group:
+            token = event.base_token or event.quote_token
+            if token is None:
+                continue
+            mint = normalize_mint(token.mint)
+            if (
+                event.raw.get("valuation_method") == "missing_token_price_no_counterparty_leg"
+                and event.raw.get("unpriced")
+                and event.kind in {"transfer_in", "transfer_out"}
+                and mint not in normalized_anchor_mints
+            ):
+                unpriced.append(event)
+                continue
+            if mint not in normalized_anchor_mints:
+                continue
+            if event.kind == "transfer_out" and event.raw.get("proceeds_hint_aud") is not None:
+                value = Decimal(str(event.raw["proceeds_hint_aud"]))
+                if token.mint == SOL_MINT:
+                    anchors_out_native.append((event, value))
+                else:
+                    anchors_out_preferred.append((event, value))
+            elif event.kind == "transfer_in" and event.raw.get("cost_hint_aud") is not None:
+                value = Decimal(str(event.raw["cost_hint_aud"]))
+                if token.mint == SOL_MINT:
+                    anchors_in_native.append((event, value))
+                else:
+                    anchors_in_preferred.append((event, value))
+
+        if not unpriced:
+            continue
+
+        chosen_out = anchors_out_preferred if anchors_out_preferred else anchors_out_native
+        chosen_in = anchors_in_preferred if anchors_in_preferred else anchors_in_native
+        out_total = sum((value for _, value in chosen_out), Decimal("0"))
+        in_total = sum((value for _, value in chosen_in), Decimal("0"))
+
+        for event in unpriced:
+            value: Decimal | None = None
+            used_anchors: list[NormalizedEvent] = []
+            if event.kind == "transfer_in" and out_total > 0:
+                value = out_total
+                used_anchors = [anchor for anchor, _ in chosen_out]
+                event.raw["cost_hint_aud"] = str(value)
+            elif event.kind == "transfer_out" and in_total > 0:
+                value = in_total
+                used_anchors = [anchor for anchor, _ in chosen_in]
+                event.raw["proceeds_hint_aud"] = str(value)
+            if value is None:
+                continue
+            event.raw["valuation_method"] = "inferred_from_same_signature_anchor"
+            event.raw["valuation_source"] = "tx-implied:transfer-group-anchor"
+            event.raw["valuation_confidence"] = "medium"
+            event.raw["valuation_status"] = "valued"
+            event.raw.pop("unpriced", None)
+            event.tags.discard("unpriced")
+            for anchor in used_anchors:
+                anchor.raw["swap_component"] = True
+                anchor.raw["accounting_action"] = "component_of_inferred_transfer_trade"
+            inferred_count += 1
+
+    if inferred_count:
+        ctx.warnings = [
+            w for w in ctx.warnings
+            if not (
+                w.code == "missing_token_price_no_counterparty_leg"
+                and any(
+                    ev.id == w.event_id and ev.raw.get("valuation_method") == "inferred_from_same_signature_anchor"
+                    for ev in events_list
+                )
+            )
+        ]
+    return inferred_count

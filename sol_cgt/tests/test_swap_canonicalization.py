@@ -4,7 +4,6 @@ import asyncio
 from decimal import Decimal
 
 from sol_cgt.ingestion import normalize
-from sol_cgt.accounting.eligibility import apply_accounting_policy
 
 
 def test_routed_swap_canonicalization(tmp_path) -> None:
@@ -85,7 +84,7 @@ def test_routed_swap_canonicalization(tmp_path) -> None:
     }
 
 
-def test_infer_buy_from_transfer_group_anchor(tmp_path) -> None:
+def test_transfer_group_anchor_no_longer_creates_inferred_swap_event_buy(tmp_path) -> None:
     tx = {
         "signature": "sigbuy",
         "timestamp": 1700000001,
@@ -102,16 +101,10 @@ def test_infer_buy_from_transfer_group_anchor(tmp_path) -> None:
         if ev.kind == "transfer_out" and (ev.base_token and ev.base_token.mint == "SOL"):
             ev.raw["proceeds_hint_aud"] = "40" if ev.base_token.amount > Decimal("0.1") else "0"
     evs = normalize._canonicalize_transfer_group_as_swap_if_possible(evs, "sigbuy", "WALLET")
-    inferred = [e for e in evs if e.raw.get("source") == "inferred_transfer_swap"]
-    assert len(inferred) == 1
-    assert inferred[0].quote_token is not None
-    assert inferred[0].raw.get("cost_hint_aud") == "40"
-    res = apply_accounting_policy(evs, sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
-    assert len([e for e in res.taxable_events if e.raw.get("source") == "inferred_transfer_swap"]) == 1
-    assert any(r["reason"] == "swap_component" for r in res.manual_review)
+    assert not any(e.raw.get("source") == "inferred_transfer_swap" for e in evs)
 
 
-def test_infer_sell_from_transfer_group_anchor(tmp_path) -> None:
+def test_transfer_group_anchor_no_longer_creates_inferred_swap_event_sell(tmp_path) -> None:
     tx = {
         "signature": "sigsell",
         "timestamp": 1700000002,
@@ -127,10 +120,7 @@ def test_infer_sell_from_transfer_group_anchor(tmp_path) -> None:
         if ev.kind == "transfer_in" and (ev.quote_token and ev.quote_token.mint == "SOL"):
             ev.raw["cost_hint_aud"] = "25"
     evs = normalize._canonicalize_transfer_group_as_swap_if_possible(evs, "sigsell", "WALLET")
-    inferred = [e for e in evs if e.raw.get("source") == "inferred_transfer_swap"]
-    assert len(inferred) == 1
-    assert inferred[0].base_token is not None
-    assert inferred[0].raw.get("proceeds_hint_aud") == "25"
+    assert not any(e.raw.get("source") == "inferred_transfer_swap" for e in evs)
 
 
 def test_multi_non_anchor_remains_manual_review(tmp_path) -> None:

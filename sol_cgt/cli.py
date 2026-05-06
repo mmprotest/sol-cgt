@@ -221,6 +221,13 @@ def _required_price_dates(events: list[NormalizedEvent], fy_period: Optional[uti
     return min(days), max(days)
 
 
+def _events_required_for_fy(events: list[NormalizedEvent], fy_period: Optional[utils.Period]) -> list[NormalizedEvent]:
+    if fy_period is None:
+        return events
+    fy_end = utils.to_au_local(fy_period.end).date()
+    return [event for event in events if utils.to_au_local(event.ts).date() <= fy_end]
+
+
 def _json_default(value):
     from dataclasses import asdict, is_dataclass
     from enum import Enum
@@ -446,7 +453,19 @@ def compute(
         force_fetch=False,
     )
     _apply_kind_breakdown(kind_counts)
-    price_dates = _required_price_dates(events, fy_period)
+    scoped_events = _events_required_for_fy(events, fy_period)
+    if fy_period is not None:
+        fy_end = utils.to_au_local(fy_period.end).date().isoformat()
+        dropped_post_fy = len(events) - len(scoped_events)
+        logger.info(
+            "FY event scope applied fy=%s original_events=%s scoped_events=%s dropped_post_fy=%s fy_end=%s",
+            fy_label,
+            len(events),
+            len(scoped_events),
+            dropped_post_fy,
+            fy_end,
+        )
+    price_dates = _required_price_dates(scoped_events, fy_period)
     if price_dates is not None:
         start_day, end_day = price_dates
         cache_path = asyncio.run(sol_price_table.ensure_sol_usd_daily_prices(start_day, end_day))
@@ -461,18 +480,18 @@ def compute(
         usd_provider=usd_provider,
     )
     if dry_run:
-        typer.echo(f"Loaded {len(events)} normalized events across {len(wallets)} wallet(s)")
+        typer.echo(f"Loaded {len(scoped_events)} normalized events across {len(wallets)} wallet(s)")
         return
     missing_lot_issues: list[MissingLotIssue] = []
     valuation_warnings = valuation_module.valuate_events(
-        events,
+        scoped_events,
         valuation_module.ValuationContext(
             usd_provider=usd_provider,
             fx_rate=price_provider.fx_rate,
         ),
     )
     result, stopped_for_missing = _run_accounting(
-        events=events,
+        events=scoped_events,
         wallets=wallets,
         settings=settings,
         price_provider=price_provider,
@@ -506,16 +525,28 @@ def compute(
                 force_fetch=True,
             )
             _apply_kind_breakdown(kind_counts)
+            scoped_events = _events_required_for_fy(events, fy_period)
+            if fy_period is not None:
+                fy_end = utils.to_au_local(fy_period.end).date().isoformat()
+                dropped_post_fy = len(events) - len(scoped_events)
+                logger.info(
+                    "FY event scope applied fy=%s original_events=%s scoped_events=%s dropped_post_fy=%s fy_end=%s",
+                    fy_label,
+                    len(events),
+                    len(scoped_events),
+                    dropped_post_fy,
+                    fy_end,
+                )
             missing_lot_issues.clear()
             valuation_warnings = valuation_module.valuate_events(
-                events,
+                scoped_events,
                 valuation_module.ValuationContext(
                     usd_provider=usd_provider,
                     fx_rate=price_provider.fx_rate,
                 ),
             )
             result, stopped_for_missing = _run_accounting(
-                events=events,
+                events=scoped_events,
                 wallets=wallets,
                 settings=settings,
                 price_provider=price_provider,
@@ -560,7 +591,7 @@ def compute(
         output_dir = output_dir / fy_label
     formats.export_reports(output_dir, acquisitions, disposals, summary_by_token, summary_overall, fmt=fmt)
     if xlsx_path:
-        for event in events:
+        for event in scoped_events:
             if event.fee_sol and "fee_aud" not in event.raw:
                 fee_price = price_provider.price_aud("SOL", event.ts, context=event.raw)
                 if fee_price is None:
@@ -588,7 +619,7 @@ def compute(
                 "Warnings": str(len(warnings)),
                 "Missing lots": str(len(missing_lot_issues)),
             },
-            events=[ev for ev in events if not fy_period or fy_period.start <= ev.ts <= fy_period.end],
+            events=[ev for ev in scoped_events if not fy_period or fy_period.start <= ev.ts <= fy_period.end],
             lots=acquisitions,
             disposals=disposals,
             summary_by_token=summary_by_token,

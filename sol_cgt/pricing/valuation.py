@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+import logging
 from typing import Callable, Iterable, Optional
 
 from .. import utils
@@ -11,6 +12,7 @@ from ..types import NormalizedEvent, WarningRecord
 from . import STABLECOIN_MINTS, TimestampPriceProvider, WSOL_MINT, normalize_mint
 
 SOL_MINT = "SOL"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,15 @@ def valuate_events(events: Iterable[NormalizedEvent], ctx: ValuationContext) -> 
         else:
             result = valuate_event(event, ctx)
         _attach_result(event, result, ctx)
+    inferred = sum(1 for e in events_list if e.raw.get("valuation_method") == "inferred_from_sol_leg")
+    missing_no_leg = sum(
+        1 for e in events_list
+        if e.raw.get("valuation_method") == "missing_token_price_no_counterparty_leg"
+    )
+    ambiguous = sum(1 for e in events_list if e.raw.get("valuation_method") == "ambiguous_multi_token_swap")
+    LOGGER.info("Inferred swap valuations from SOL legs count=%s", inferred)
+    LOGGER.info("Missing token prices without counterparty leg count=%s", missing_no_leg)
+    LOGGER.info("Ambiguous swap valuations count=%s", ambiguous)
     return ctx.warnings
 
 
@@ -72,13 +83,16 @@ def valuate_event(event: NormalizedEvent, ctx: ValuationContext) -> ValuationRes
         "cost_hint_aud" in event.raw or "cost_hint_usd" in event.raw
     ):
         return ValuationResult(None, None, "hint", "existing cost hint")
+    if event.kind == "transfer_internal" or event.raw.get("is_internal_transfer"):
+        return ValuationResult(None, None, "internal-transfer", "valuation bypassed for internal transfer")
     usd_price = ctx.usd_provider.price_usd(token.mint, event.ts)
     if usd_price is None:
         ctx.warn(
             event,
-            "missing_price",
-            f"Price not available for mint={token.mint} at {event.ts.isoformat()}",
+            "missing_token_price_no_counterparty_leg",
+            f"Price unavailable without counterparty leg for mint={token.mint} at {event.ts.isoformat()}",
         )
+        event.raw["valuation_method"] = "missing_token_price_no_counterparty_leg"
         _mark_unpriced(event)
         return ValuationResult(None, None, "unpriced", "missing timestamp price")
     value_usd = usd_price * token.amount
@@ -140,7 +154,7 @@ def _swap_valuation_map(
 ) -> dict[str, ValuationResult]:
     grouped: dict[tuple[str, str], list[NormalizedEvent]] = {}
     for event in events:
-        if event.kind != "swap":
+        if not isinstance(event.raw.get("swap_legs"), list):
             continue
         signature = event.raw.get("signature") or event.id
         grouped.setdefault((signature, event.wallet), []).append(event)
@@ -151,6 +165,43 @@ def _swap_valuation_map(
         if not isinstance(swap_legs, list):
             continue
         ins, outs = _swap_deltas(swap_legs)
+        token_ins = {m: a for m, a in ins.items() if not _is_sol(m) and not _is_stable(m)}
+        token_outs = {m: a for m, a in outs.items() if not _is_sol(m) and not _is_stable(m)}
+        sol_in_qty = sum((amt for mint, amt in ins.items() if _is_sol(mint)), Decimal("0"))
+        sol_out_qty = sum((amt for mint, amt in outs.items() if _is_sol(mint)), Decimal("0"))
+        if len(token_ins) + len(token_outs) > 1:
+            for event in group:
+                ctx.warn(event, "ambiguous_multi_token_swap", f"valuation_method_unavailable: ambiguous_multi_token_swap signature={signature}")
+                event.raw["valuation_method"] = "ambiguous_multi_token_swap"
+                results[event.id] = ValuationResult(None, None, "unpriced", "ambiguous_multi_token_swap")
+            continue
+        if len(token_ins) + len(token_outs) == 1 and (sol_in_qty > 0 or sol_out_qty > 0):
+            sol_amt = sol_in_qty or sol_out_qty
+            sol_price = ctx.usd_provider.price_usd(SOL_MINT, group[0].ts)
+            if sol_price is not None:
+                total_usd = sol_amt * sol_price
+                fx = ctx.fx_rate(group[0].ts)
+                total_aud = utils.quantize_aud(total_usd * fx)
+                for event in group:
+                    token = event.base_token or event.quote_token
+                    if token is None:
+                        continue
+                    if not _is_sol(token.mint):
+                        event.raw["valuation_method"] = "inferred_from_sol_leg"
+                        event.raw["valuation_reference_asset"] = WSOL_MINT
+                        event.raw["valuation_reference_mint"] = WSOL_MINT
+                        event.raw["valuation_reference_amount"] = str(sol_amt)
+                        event.raw["valuation_reference_price_usd"] = str(sol_price)
+                        event.raw["valuation_fx_usd_aud"] = str(fx)
+                        event.raw["valuation_confidence"] = "high"
+                    if event.base_token is not None:
+                        event.raw.setdefault("proceeds_hint_usd", str(total_usd))
+                        event.raw.setdefault("proceeds_hint_aud", str(total_aud))
+                    elif event.quote_token is not None:
+                        event.raw.setdefault("cost_hint_usd", str(total_usd))
+                        event.raw.setdefault("cost_hint_aud", str(total_aud))
+                    results[event.id] = ValuationResult(total_usd, total_aud, "tx-implied:sol-leg", "SOL/WSOL counterparty inferred")
+                continue
         total_consideration, price_source, notes = _swap_anchor_value(ins, outs, group[0].ts, ctx)
         if total_consideration is None:
             for event in group:

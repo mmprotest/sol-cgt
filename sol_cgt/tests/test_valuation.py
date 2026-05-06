@@ -78,3 +78,59 @@ def test_provider_returns_none_for_non_sol_token() -> None:
     provider = TimestampPriceProvider(api_key="key")
     ts = datetime(2024, 8, 1, tzinfo=timezone.utc)
     assert provider.price_usd("TOKENX", ts) is None
+
+
+def test_buy_swap_infers_from_sol_leg_no_token_price_lookup() -> None:
+    ts = datetime(2024, 7, 1, tzinfo=timezone.utc)
+    event = NormalizedEvent(
+        id="sig#1",
+        ts=ts,
+        kind="buy",
+        quote_token=TokenAmount(mint="TOKENX", symbol="TKX", decimals=6, amount_raw=10_000_000_000),
+        fee_sol=Decimal("0"),
+        wallet="WALLET",
+        raw={
+            "signature": "sig",
+            "swap_legs": [
+                {"mint": "So11111111111111111111111111111111111111112", "amount": "0.5", "direction": "out"},
+                {"mint": "TOKENX", "amount": "10000", "direction": "in"},
+            ],
+        },
+    )
+    ctx = valuation_module.ValuationContext(
+        usd_provider=FixedUsdProvider({"SOL": Decimal("100")}),
+        fx_rate=lambda _: Decimal("1.5"),
+    )
+    warnings = valuation_module.valuate_events([event], ctx)
+    assert warnings == []
+    assert Decimal(event.raw["cost_hint_usd"]) == Decimal("50.0")
+    assert Decimal(event.raw["cost_hint_aud"]) == Decimal("75.00")
+    assert event.raw["valuation_method"] == "inferred_from_sol_leg"
+
+
+def test_ambiguous_multi_token_swap_warns() -> None:
+    ts = datetime(2024, 7, 1, tzinfo=timezone.utc)
+    event = NormalizedEvent(
+        id="sig2#1",
+        ts=ts,
+        kind="buy",
+        quote_token=TokenAmount(mint="TOKENX", symbol="TKX", decimals=6, amount_raw=1_000_000),
+        fee_sol=Decimal("0"),
+        wallet="WALLET",
+        raw={
+            "signature": "sig2",
+            "swap_legs": [
+                {"mint": "WSOL", "amount": "0.5", "direction": "out"},
+                {"mint": "TOKENX", "amount": "1", "direction": "in"},
+                {"mint": "TOKENY", "amount": "2", "direction": "in"},
+            ],
+        },
+    )
+    ctx = valuation_module.ValuationContext(
+        usd_provider=FixedUsdProvider({"SOL": Decimal("100")}),
+        fx_rate=lambda _: Decimal("1.0"),
+    )
+    warnings = valuation_module.valuate_events([event], ctx)
+    assert warnings
+    assert warnings[0].code == "ambiguous_multi_token_swap"
+    assert event.raw["valuation_method"] == "ambiguous_multi_token_swap"

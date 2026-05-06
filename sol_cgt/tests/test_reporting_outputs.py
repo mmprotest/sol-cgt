@@ -135,6 +135,9 @@ def test_csv_and_xlsx_outputs(tmp_path) -> None:
     assert "Wallet summary" in workbook.sheetnames
     assert [cell.value for cell in workbook["Summary by token"][1]] == SUMMARY_BY_TOKEN_COLUMNS
     assert [cell.value for cell in workbook["Wallet summary"][1]] == WALLET_SUMMARY_COLUMNS
+    tx_headers = [cell.value for cell in workbook["Transactions"][1]]
+    assert "valuation_method" in tx_headers
+    assert "valuation_reference_asset" in tx_headers
 
 
 def test_parquet_requires_extra(monkeypatch, tmp_path) -> None:

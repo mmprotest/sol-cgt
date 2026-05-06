@@ -71,3 +71,50 @@ def test_tiny_sol_with_token_to_token_still_classified_token_to_token_without_se
     assert not any(e.raw.get("valuation_method") == "inferred_from_same_signature_anchor" for e in [out_ev, in_ev, tiny_sol])
     c=canonicalize_token_to_token([out_ev,in_ev,tiny_sol])
     assert c["token_to_token_canonical_events_created"]==1
+
+
+def test_inferred_sell_group_creates_canonical_taxable_disposal_and_excludes_raw_component():
+    buy = _ev("b0", "buy", quote=_tok("AAA", 10), raw={"cost_aud": "100"})
+    out_ev = _ev("s3#0", "transfer_out", base=_tok("AAA", 5), raw={"signature": "sig-inf-sell", "valuation_method": "inferred_from_same_signature_anchor", "valuation_confidence": "medium", "source": "helius_token_transfer"})
+    anchor_in = _ev("s3#1", "transfer_in", quote=_tok("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 20), raw={"signature": "sig-inf-sell", "cost_hint_aud": "50"})
+    events = [buy, out_ev, anchor_in]
+    canonicalize_token_to_token(events)
+    eligible = apply_accounting_policy(events, sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
+    assert not any(e.id == out_ev.id for e in eligible.taxable_events)
+    assert any(e.id.endswith("#inferred_sell") for e in eligible.taxable_events)
+    res = AccountingEngine(price_provider=SimplePriceProvider({})).process(eligible.taxable_events)
+    assert len([d for d in res.disposals if d.token_mint == "AAA"]) == 1
+
+
+def test_inferred_buy_group_creates_canonical_taxable_acquisition_and_excludes_raw_component():
+    in_ev = _ev("s4#0", "transfer_in", quote=_tok("BBB", 7), raw={"signature": "sig-inf-buy", "valuation_method": "inferred_from_same_signature_anchor", "valuation_confidence": "medium", "source": "helius_token_transfer"})
+    anchor_out = _ev("s4#1", "transfer_out", base=_tok("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 20), raw={"signature": "sig-inf-buy", "proceeds_hint_aud": "70"})
+    events = [in_ev, anchor_out]
+    canonicalize_token_to_token(events)
+    eligible = apply_accounting_policy(events, sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
+    assert not any(e.id == in_ev.id for e in eligible.taxable_events)
+    assert any(e.id.endswith("#inferred_buy") for e in eligible.taxable_events)
+
+
+def test_medium_confidence_not_auto_manual_review():
+    ev = _ev("m#0", "transfer_out", base=_tok("AAA", 1), raw={"valuation_method": "inferred_from_same_signature_anchor", "valuation_confidence": "medium", "source": "helius_token_transfer", "proceeds_hint_aud": "10"})
+    res = apply_accounting_policy([ev], sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
+    assert not res.manual_review
+
+
+def test_ambiguous_multiple_non_anchor_outs_go_manual_review():
+    a = _ev("a#0", "transfer_out", base=_tok("AAA", 1), raw={"signature": "sig-amb-out", "valuation_method": "inferred_from_same_signature_anchor", "source": "helius_token_transfer"})
+    b = _ev("a#1", "transfer_out", base=_tok("BBB", 1), raw={"signature": "sig-amb-out", "valuation_method": "inferred_from_same_signature_anchor", "source": "helius_token_transfer"})
+    c = _ev("a#2", "transfer_in", quote=_tok("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 1), raw={"signature": "sig-amb-out", "cost_hint_aud": "10"})
+    events = [a, b, c]
+    canonicalize_token_to_token(events)
+    assert a.raw.get("accounting_action") == "manual_review"
+
+
+def test_ambiguous_multiple_non_anchor_ins_go_manual_review():
+    a = _ev("b#0", "transfer_in", quote=_tok("AAA", 1), raw={"signature": "sig-amb-in", "valuation_method": "inferred_from_same_signature_anchor", "source": "helius_token_transfer"})
+    b = _ev("b#1", "transfer_in", quote=_tok("BBB", 1), raw={"signature": "sig-amb-in", "valuation_method": "inferred_from_same_signature_anchor", "source": "helius_token_transfer"})
+    c = _ev("b#2", "transfer_out", base=_tok("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 1), raw={"signature": "sig-amb-in", "proceeds_hint_aud": "10"})
+    events = [a, b, c]
+    canonicalize_token_to_token(events)
+    assert a.raw.get("accounting_action") == "manual_review"

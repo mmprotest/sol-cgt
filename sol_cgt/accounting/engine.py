@@ -100,10 +100,6 @@ class AccountingEngine:
         for event in sorted(events_list, key=lambda ev: (ev.ts, ev.id)):
             if event.raw.get("is_internal_transfer_duplicate"):
                 continue
-            if self._is_medium_confidence_inferred_transfer_out(event):
-                event.raw["accounting_action"] = "manual_review"
-                event.raw.setdefault("manual_review_reason", "inferred_same_signature_anchor_medium_confidence")
-                continue
             if event.kind == "transfer_internal":
                 continue
             if event.id in matched_in_ids:
@@ -348,14 +344,6 @@ class AccountingEngine:
             event.raw.get("valuation_method") == "inferred_from_same_signature_anchor"
             and event.raw.get("source") == "helius_token_transfer"
             and not event.raw.get("swap_component")
-        )
-
-    def _is_medium_confidence_inferred_transfer_out(self, event: NormalizedEvent) -> bool:
-        return (
-            event.raw.get("source") == "helius_token_transfer"
-            and event.raw.get("valuation_method") == "inferred_from_same_signature_anchor"
-            and event.raw.get("valuation_confidence") == "medium"
-            and event.kind == "transfer_out"
         )
 
     def _should_force_taxable_disposal(self, event: NormalizedEvent) -> bool:

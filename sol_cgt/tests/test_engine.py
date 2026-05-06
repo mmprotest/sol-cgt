@@ -192,7 +192,7 @@ def test_medium_confidence_inferred_transfer_out_is_not_forced_taxable_disposal(
     sell = _ev("s#0", "transfer_out", ts.replace(hour=1), "W1", base=_token("ABC", 4, symbol="ABC"), counterparty="EXT", raw={"accounting_action": "taxable_disposal", "proceeds_hint_aud": "80", "valuation_method": "inferred_from_same_signature_anchor", "valuation_confidence": "medium", "source": "helius_token_transfer"})
     result = AccountingEngine(price_provider=SimplePriceProvider({})).process([buy, sell], wallets=["W1"])
     assert len(result.disposals) == 0
-    assert len(result.lot_moves) == 0
+    assert len(result.lot_moves) == 1
 
 
 def test_medium_confidence_inferred_transfer_in_with_cost_hint_is_forced_taxable_acquisition() -> None:
@@ -297,7 +297,7 @@ def test_inferred_transfer_in_lot_is_consumed_and_inferred_transfer_out_is_not_d
     result = AccountingEngine(price_provider=SimplePriceProvider({})).process([inferred_in, inferred_out, swap], wallets=["W1"])
     assert len(result.disposals) == 1
     assert result.disposals[0].event_id == "sw2#0"
-    assert result.disposals[0].cost_base_aud == Decimal("55.00")
+    assert result.disposals[0].cost_base_aud == Decimal("33.00")
 
 
 def test_partial_missing_lot_disposal_processes_available_amount() -> None:

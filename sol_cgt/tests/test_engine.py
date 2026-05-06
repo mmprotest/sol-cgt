@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from sol_cgt.accounting.engine import AccountingEngine, SimplePriceProvider
-from sol_cgt.types import NormalizedEvent, TokenAmount
+from sol_cgt.types import MissingLotIssue, NormalizedEvent, TokenAmount
 
 
 def _token(mint: str, amount: int, decimals: int = 0, symbol: str | None = None) -> TokenAmount:
@@ -173,3 +173,53 @@ def test_low_unit_price_cost_basis_preserved_partial_disposal() -> None:
     result = AccountingEngine(price_provider=SimplePriceProvider({"SOL": Decimal("0")})).process([acquisition, disposal])
     assert len(result.disposals) == 1
     assert result.disposals[0].cost_base_aud == expected_cost_base
+
+
+def _token(mint: str, amount: int, decimals: int = 0, symbol: str | None = None) -> TokenAmount:
+    return TokenAmount(mint=mint, amount_raw=amount, decimals=decimals, symbol=symbol)
+
+
+def _ev(event_id: str, kind: str, ts: datetime, wallet: str, *, base=None, quote=None, counterparty=None, raw=None) -> NormalizedEvent:
+    payload = {"signature": event_id.split("#")[0]}
+    if raw:
+        payload.update(raw)
+    return NormalizedEvent(id=event_id, ts=ts, kind=kind, wallet=wallet, base_token=base, quote_token=quote, counterparty=counterparty, fee_sol=Decimal("0"), raw=payload, tags=set())
+
+
+def test_valued_transfer_out_routes_to_taxable_disposal_not_external_move() -> None:
+    ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    buy = _ev("b#0", "buy", ts, "W1", quote=_token("ABC", 10, symbol="ABC"), raw={"cost_aud": "100"})
+    sell = _ev("s#0", "transfer_out", ts.replace(hour=1), "W1", base=_token("ABC", 4, symbol="ABC"), counterparty="EXT", raw={"accounting_action": "taxable_disposal", "proceeds_hint_aud": "80", "valuation_method": "inferred_from_same_signature_anchor", "source": "helius_token_transfer"})
+    result = AccountingEngine(price_provider=SimplePriceProvider({})).process([buy, sell], wallets=["W1"])
+    assert len(result.disposals) == 1
+    assert len(result.lot_moves) == 0
+
+
+def test_valued_transfer_in_routes_to_taxable_acquisition_with_hint_cost() -> None:
+    ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    event = _ev("a#0", "transfer_in", ts, "W1", quote=_token("ABC", 5, symbol="ABC"), counterparty="EXT", raw={"accounting_action": "taxable_acquisition", "cost_hint_aud": "55", "valuation_method": "inferred_from_same_signature_anchor", "source": "helius_token_transfer"})
+    result = AccountingEngine(price_provider=SimplePriceProvider({})).process([event], wallets=["W1"], external_lot_tracking=True)
+    assert len(result.acquisitions) == 1
+    assert result.acquisitions[0].unit_cost_aud == Decimal("11.000000000000")
+    assert len(result.lot_moves) == 0
+
+
+def test_swap_component_transfer_row_remains_excluded_from_taxable() -> None:
+    ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    event = _ev("c#0", "transfer_in", ts, "W1", quote=_token("WSOL", 5, symbol="WSOL"), counterparty="EXT", raw={"accounting_action": "taxable_acquisition", "cost_hint_aud": "55", "swap_component": True, "valuation_method": "inferred_from_same_signature_anchor", "source": "helius_token_transfer"})
+    engine = AccountingEngine(price_provider=SimplePriceProvider({}))
+    result = engine.process([event], wallets=["W1"])
+    assert engine.debug_counters["valued_transfer_group_acquisitions_accounted"] == 0
+    assert len(result.acquisitions) == 1
+    assert len(result.lot_moves) == 0
+
+
+def test_partial_missing_lot_disposal_processes_available_amount() -> None:
+    ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    buy = _ev("p1#0", "buy", ts, "W1", quote=_token("ABC", 10, symbol="ABC"), raw={"cost_aud": "100"})
+    sell = _ev("p2#0", "sell", ts.replace(hour=1), "W1", base=_token("ABC", 12, symbol="ABC"), raw={"proceeds_aud": "120", "signature": "sigp2"})
+    issues: list[MissingLotIssue] = []
+    result = AccountingEngine(price_provider=SimplePriceProvider({})).process([buy, sell], strict_lots=False, missing_lot_issues=issues)
+    assert len(result.disposals) == 1
+    assert result.disposals[0].qty_disposed == Decimal("10")
+    assert issues and issues[0].shortfall_qty == Decimal("2")

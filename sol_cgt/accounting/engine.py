@@ -90,6 +90,11 @@ class AccountingEngine:
         swap_hint_warned: set[str] = set()
         default_decimals_warned: set[tuple[Optional[str], str]] = set()
         missing_price_warned: set[tuple[str, str, str]] = set()
+        self.debug_counters: dict[str, int] = {
+            "valued_transfer_group_acquisitions_accounted": 0,
+            "valued_transfer_group_disposals_accounted": 0,
+            "valued_transfer_group_events_routed_to_external_move": 0,
+        }
 
         for event in sorted(events, key=lambda ev: (ev.ts, ev.id)):
             if event.raw.get("is_internal_transfer_duplicate"):
@@ -139,43 +144,53 @@ class AccountingEngine:
                     raise
             if event.kind == "transfer_out" and event.base_token is not None:
                 if not event.counterparty or event.counterparty not in wallet_set:
-                    move_record, moved_lots = self._handle_out_of_scope_transfer(
-                        event,
-                        warnings,
-                        missing_price_warned,
-                        external_lot_tracking,
-                    )
-                    if move_record is not None:
-                        lot_moves.append(move_record)
-                    acquisitions.extend(moved_lots)
-                    continue
-            if event.kind == "transfer_in" and event.quote_token is not None:
-                if not event.counterparty or event.counterparty not in wallet_set:
-                    moved = False
-                    if external_lot_tracking:
-                        moved, moved_lots = self._handle_external_return(
+                    if self._should_force_taxable_disposal(event):
+                        self.debug_counters["valued_transfer_group_disposals_accounted"] += 1
+                    else:
+                        if self._is_valued_transfer_group_event(event):
+                            self.debug_counters["valued_transfer_group_events_routed_to_external_move"] += 1
+                        move_record, moved_lots = self._handle_out_of_scope_transfer(
                             event,
-                            lot_moves,
                             warnings,
                             missing_price_warned,
+                            external_lot_tracking,
                         )
-                        if moved:
-                            acquisitions.extend(moved_lots)
-                            continue
-                    warnings.append(
-                        WarningRecord(
-                            ts=event.ts,
-                            wallet=event.wallet,
-                            signature=event.raw.get("signature"),
-                            code="external_transfer_in",
-                            message=(
-                                "Transfer in from external wallet treated as acquisition at spot price."
-                                if external_lot_tracking
-                                else "Transfer in from external wallet treated as acquisition at spot price. "
-                                "Enable external_lot_tracking to attempt matching."
-                            ),
+                        if move_record is not None:
+                            lot_moves.append(move_record)
+                        acquisitions.extend(moved_lots)
+                        continue
+            if event.kind == "transfer_in" and event.quote_token is not None:
+                if not event.counterparty or event.counterparty not in wallet_set:
+                    if self._should_force_taxable_acquisition(event):
+                        self.debug_counters["valued_transfer_group_acquisitions_accounted"] += 1
+                    else:
+                        if self._is_valued_transfer_group_event(event):
+                            self.debug_counters["valued_transfer_group_events_routed_to_external_move"] += 1
+                        moved = False
+                        if external_lot_tracking:
+                            moved, moved_lots = self._handle_external_return(
+                                event,
+                                lot_moves,
+                                warnings,
+                                missing_price_warned,
+                            )
+                            if moved:
+                                acquisitions.extend(moved_lots)
+                                continue
+                        warnings.append(
+                            WarningRecord(
+                                ts=event.ts,
+                                wallet=event.wallet,
+                                signature=event.raw.get("signature"),
+                                code="external_transfer_in",
+                                message=(
+                                    "Transfer in from external wallet treated as acquisition at spot price."
+                                    if external_lot_tracking
+                                    else "Transfer in from external wallet treated as acquisition at spot price. "
+                                    "Enable external_lot_tracking to attempt matching."
+                                ),
+                            )
                         )
-                    )
             if event.kind == "swap":
                 signature = event.raw.get("signature")
                 if signature and event.raw.get("swap_hint_missing") and signature not in swap_hint_warned:
@@ -229,6 +244,26 @@ class AccountingEngine:
                     )
                 except methods.LotSelectionError as exc:
                     issue = exc.issue
+                    if issue is not None and issue.available_qty > 0 and issue.available_qty < issue.required_qty:
+                        partial_records = self._attempt_partial_disposal(event, base_token, proceeds_aud, fee_aud, issue)
+                        if partial_records:
+                            disposals.extend(partial_records)
+                            if missing_lot_issues is not None:
+                                missing_lot_issues.append(issue)
+                            warnings.append(
+                                WarningRecord(
+                                    ts=event.ts,
+                                    wallet=event.wallet,
+                                    signature=event.raw.get("signature"),
+                                    code="missing_lot_history",
+                                    message=(
+                                        "Partial disposal processed due to missing lot history "
+                                        f"(missing_qty={issue.shortfall_qty}, disposed_qty={issue.available_qty}, "
+                                        f"signature={event.raw.get('signature')})."
+                                    ),
+                                )
+                            )
+                            continue
                     if issue and missing_lot_issues is not None:
                         missing_lot_issues.append(issue)
                     if strict_lots:
@@ -272,6 +307,27 @@ class AccountingEngine:
             disposals=disposals,
             lot_moves=lot_moves,
             warnings=warnings,
+        )
+
+    def _is_valued_transfer_group_event(self, event: NormalizedEvent) -> bool:
+        return (
+            event.raw.get("valuation_method") == "inferred_from_same_signature_anchor"
+            and event.raw.get("source") == "helius_token_transfer"
+            and not event.raw.get("swap_component")
+        )
+
+    def _should_force_taxable_disposal(self, event: NormalizedEvent) -> bool:
+        return (
+            not event.raw.get("swap_component")
+            and event.raw.get("accounting_action") == "taxable_disposal"
+            and event.raw.get("proceeds_hint_aud") is not None
+        )
+
+    def _should_force_taxable_acquisition(self, event: NormalizedEvent) -> bool:
+        return (
+            not event.raw.get("swap_component")
+            and event.raw.get("accounting_action") == "taxable_acquisition"
+            and event.raw.get("cost_hint_aud") is not None
         )
 
     # ------------------------------------------------------------------
@@ -723,6 +779,20 @@ class AccountingEngine:
     def _external_wallet_id(self, counterparty: Optional[str]) -> str:
         address = counterparty or "unknown"
         return f"__external__:{address}"
+
+    def _attempt_partial_disposal(
+        self,
+        event: NormalizedEvent,
+        base: TokenAmount,
+        proceeds_aud: Decimal,
+        fee_aud: Decimal,
+        issue: MissingLotIssue,
+    ) -> List[DisposalRecord]:
+        if issue.available_qty <= 0 or base.amount <= 0:
+            return []
+        partial_proceeds = utils.quantize_aud(proceeds_aud * (issue.available_qty / base.amount))
+        partial_fee = utils.quantize_aud(fee_aud * (issue.available_qty / base.amount))
+        return self._handle_disposal(event, base.model_copy(update={"amount": issue.available_qty}), partial_proceeds, partial_fee)
 
 
 def _issue_context(event: NormalizedEvent, token: TokenAmount) -> dict[str, object]:

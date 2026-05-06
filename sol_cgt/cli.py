@@ -612,12 +612,6 @@ def compute(
     logger.info("token_to_token_cost_basis_carried_aud=%s", t2t_counters["token_to_token_cost_basis_carried_aud"])
     logger.info("token_to_token_groups_missing_outgoing_lots=%s", t2t_counters["token_to_token_groups_missing_outgoing_lots"])
     logger.info("token_to_token_component_rows_excluded=%s", t2t_counters["token_to_token_component_rows_excluded"])
-    t2t_counters = canonicalize_token_to_token(scoped_events)
-    logger.info("token_to_token_groups_detected=%s", t2t_counters["token_to_token_groups_detected"])
-    logger.info("token_to_token_canonical_events_created=%s", t2t_counters["token_to_token_canonical_events_created"])
-    logger.info("token_to_token_cost_basis_carried_aud=%s", t2t_counters["token_to_token_cost_basis_carried_aud"])
-    logger.info("token_to_token_groups_missing_outgoing_lots=%s", t2t_counters["token_to_token_groups_missing_outgoing_lots"])
-    logger.info("token_to_token_component_rows_excluded=%s", t2t_counters["token_to_token_component_rows_excluded"])
     eligibility = apply_accounting_policy(
         scoped_events,
         sol_dust_threshold=sol_dust_threshold_dec,

@@ -241,16 +241,6 @@ class AccountingEngine:
                     disposals.extend(swap_disposals)
                     acquisitions.append(swap_acquisition)
                     event.raw["token_to_token_cost_basis_carried_aud"] = str(sum((d.cost_base_aud for d in swap_disposals), Decimal("0")))
-                    signature = event.raw.get("signature")
-                    if signature:
-                        for candidate in events_list:
-                            if (
-                                candidate.wallet == event.wallet
-                                and candidate.raw.get("signature") == signature
-                                and candidate.kind in {"transfer_in", "transfer_out"}
-                            ):
-                                candidate.raw["swap_component"] = True
-                                candidate.raw["accounting_action"] = "component_of_token_to_token_swap"
                     continue
                 except methods.LotSelectionError:
                     event.raw["accounting_action"] = "manual_review"

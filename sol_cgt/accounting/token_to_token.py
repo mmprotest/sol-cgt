@@ -27,6 +27,8 @@ def canonicalize_token_to_token(events: list[NormalizedEvent]) -> dict[str, Deci
         "token_to_token_component_rows_excluded": 0,
     }
     for (sig, wallet), group in grouped.items():
+        if any(e.kind == "swap" and e.raw.get("valuation_method") == "token_to_token_cost_basis_carry" for e in group):
+            continue
         transfers = [e for e in group if e.kind in {"transfer_in", "transfer_out"} and not e.raw.get("swap_component")]
         if not transfers:
             continue
@@ -67,4 +69,9 @@ def canonicalize_token_to_token(events: list[NormalizedEvent]) -> dict[str, Deci
         )
         events_list.append(canonical)
         counters["token_to_token_canonical_events_created"] += 1
+        for component in transfers:
+            component.raw["swap_component"] = True
+            component.raw["accounting_action"] = "component_of_token_to_token_swap"
+            component.raw["canonical_replacement_event_id"] = canonical.id
+            counters["token_to_token_component_rows_excluded"] += 1
     return counters

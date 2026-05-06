@@ -353,6 +353,24 @@ def _mark_unpriced(event: NormalizedEvent) -> None:
     event.tags.add("unpriced")
 
 
+
+
+def _is_clean_token_to_token_signature(group: list[NormalizedEvent], normalized_anchor_mints: set[str]) -> bool:
+    deltas: dict[str, Decimal] = {}
+    for event in group:
+        token = event.base_token if event.kind == "transfer_out" else event.quote_token if event.kind == "transfer_in" else None
+        if token is None:
+            continue
+        mint = normalize_mint(token.mint)
+        qty = -token.amount if event.kind == "transfer_out" else token.amount
+        deltas[mint] = deltas.get(mint, Decimal("0")) + qty
+    non_zero = {m: q for m, q in deltas.items() if q != 0}
+    non_anchor = {m: q for m, q in non_zero.items() if m not in normalized_anchor_mints}
+    neg = [(m, q) for m, q in non_anchor.items() if q < 0]
+    pos = [(m, q) for m, q in non_anchor.items() if q > 0]
+    anchor_material = any(m in normalized_anchor_mints and q.copy_abs() > Decimal("0.02") for m, q in non_zero.items())
+    return len(neg) == 1 and len(pos) == 1 and neg[0][0] != pos[0][0] and not anchor_material
+
 def _infer_missing_transfer_values_from_same_signature_anchors(events_list: list[NormalizedEvent], ctx: ValuationContext) -> int:
     grouped: dict[tuple[str, str], list[NormalizedEvent]] = {}
     for event in events_list:
@@ -364,6 +382,8 @@ def _infer_missing_transfer_values_from_same_signature_anchors(events_list: list
     inferred_count = 0
     normalized_anchor_mints = {normalize_mint(m) for m in TRANSFER_ANCHOR_MINTS}
     for (_signature, _wallet), group in grouped.items():
+        if _is_clean_token_to_token_signature(group, normalized_anchor_mints):
+            continue
         unpriced: list[NormalizedEvent] = []
         anchors_out_preferred: list[tuple[NormalizedEvent, Decimal]] = []
         anchors_out_native: list[tuple[NormalizedEvent, Decimal]] = []

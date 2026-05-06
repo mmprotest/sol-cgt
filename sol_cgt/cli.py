@@ -28,6 +28,7 @@ from .reconciliation import transfers
 from .reporting import console as console_report
 from .reporting import formats, summaries, xlsx
 from .types import MissingLotIssue, NormalizedEvent
+from .types import WarningRecord
 from . import utils
 from .utils import australian_financial_year_bounds, parse_local_date
 from .providers import jupiter as jupiter_provider
@@ -380,10 +381,10 @@ def compute(
         "--strict-lots/--no-strict-lots",
         help="Stop processing when lots are missing (default from config)",
     ),
-    auto_backfill: Optional[bool] = typer.Option(
-        None,
-        "--auto-backfill/--no-auto-backfill",
-        help="Automatically backfill earlier history when lots are missing",
+    enable_auto_backfill: bool = typer.Option(
+        False,
+        "--enable-auto-backfill",
+        help="Enable automatic backfill for missing lot history",
     ),
     backfill_step_days: Optional[int] = typer.Option(
         None,
@@ -403,8 +404,8 @@ def compute(
         overrides["method"] = method
     if strict_lots is not None:
         overrides["strict_lots"] = strict_lots
-    if auto_backfill is not None:
-        overrides["auto_backfill"] = auto_backfill
+    if enable_auto_backfill:
+        overrides["auto_backfill"] = True
     if backfill_step_days is not None:
         overrides["backfill_step_days"] = backfill_step_days
     if max_backfill_days is not None:
@@ -506,17 +507,22 @@ def compute(
         strict_lots=settings.strict_lots,
         missing_lot_issues=missing_lot_issues,
     )
+    if stopped_for_missing and missing_lot_issues and not settings.auto_backfill:
+        logger.warning("Auto-backfill disabled; missing lot history will be reported instead of fetched.")
     if stopped_for_missing and settings.auto_backfill and missing_lot_issues:
         issue = missing_lot_issues[-1]
         backfill_end = issue.ts
         if fy_period and backfill_end < fy_period.start:
             backfill_end = fy_period.start
         backfill_days = 0
+        missing_lot_count_before = len(missing_lot_issues)
         while backfill_days < settings.max_backfill_days:
             backfill_days += settings.backfill_step_days
             new_start = backfill_end - timedelta(days=backfill_days)
+            raw_before = sum(len(fetch_mod.load_cached(addr)) for addr in wallets)
+            events_before = len(scoped_events)
             logger.info(
-                "Auto-backfill attempt=%s days=%s start=%s end=%s",
+                "Auto-backfill attempt=%s reason=missing_lot_history days=%s start=%s end=%s",
                 (backfill_days // settings.backfill_step_days),
                 backfill_days,
                 new_start.isoformat(),
@@ -563,6 +569,16 @@ def compute(
                 strict_lots=settings.strict_lots,
                 missing_lot_issues=missing_lot_issues,
             )
+            raw_after = sum(len(fetch_mod.load_cached(addr)) for addr in wallets)
+            events_after = len(scoped_events)
+            missing_lot_count_after = len(missing_lot_issues)
+            if raw_after <= raw_before and events_after <= events_before:
+                logger.warning("Auto-backfill stopped reason=no_new_events")
+                break
+            if missing_lot_count_after >= missing_lot_count_before:
+                logger.warning("Auto-backfill stopped reason=no_missing_lot_improvement")
+                break
+            missing_lot_count_before = missing_lot_count_after
             if not stopped_for_missing:
                 break
         if stopped_for_missing:
@@ -574,6 +590,20 @@ def compute(
     acquisitions = result.acquisitions
     lot_moves = result.lot_moves
     warnings = [*valuation_warnings, *result.warnings]
+    warnings.extend(
+        WarningRecord(
+            ts=issue.ts,
+            wallet=issue.wallet,
+            signature=issue.signature,
+            event_id=issue.event_id,
+            mint=issue.mint,
+            amount=issue.shortfall_qty,
+            reason="missing_lot_history",
+            code="missing_lot_history",
+            message=issue.message,
+        )
+        for issue in missing_lot_issues
+    )
     if fy_period:
         disposals = [d for d in disposals if fy_period.start <= d.ts <= fy_period.end]
         used_lot_ids = {

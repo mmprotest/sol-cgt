@@ -129,7 +129,6 @@ class AudPriceProvider:
     def _price_aud_uncached(self, mint: str, ts: datetime) -> Optional[Decimal]:
         usd_price = self.price_usd(mint, ts)
         if usd_price is None:
-            LOGGER.warning("Price not available for mint=%s at %s", mint, ts.isoformat())
             return None
         fx = self.fx_rate(ts)
         return utils.quantize_aud(usd_price * fx)

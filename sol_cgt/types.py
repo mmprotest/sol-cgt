@@ -170,6 +170,10 @@ class WarningRecord(BaseModel):
     ts: datetime
     wallet: Optional[str] = None
     signature: Optional[str] = None
+    event_id: Optional[str] = None
+    mint: Optional[str] = None
+    amount: Optional[Decimal] = None
+    reason: Optional[str] = None
     code: str
     message: str
 

@@ -30,7 +30,7 @@ class ValuationContext:
     warnings: list[WarningRecord] = field(default_factory=list)
     _warned: set[tuple[str, str]] = field(default_factory=set)
 
-    def warn(self, event: NormalizedEvent, code: str, message: str) -> None:
+    def warn(self, event: NormalizedEvent, code: str, message: str, *, mint: str | None = None, amount: Decimal | None = None, reason: str | None = None) -> None:
         signature = event.raw.get("signature")
         key = (signature or event.id, code)
         if key in self._warned:
@@ -41,6 +41,10 @@ class ValuationContext:
                 ts=event.ts,
                 wallet=event.wallet,
                 signature=signature,
+                event_id=event.id,
+                mint=mint,
+                amount=amount,
+                reason=reason,
                 code=code,
                 message=message,
             )
@@ -64,7 +68,14 @@ def valuate_events(events: Iterable[NormalizedEvent], ctx: ValuationContext) -> 
     )
     ambiguous = sum(1 for e in events_list if e.raw.get("valuation_method") == "ambiguous_multi_token_swap")
     LOGGER.info("Inferred swap valuations from SOL legs count=%s", inferred)
-    LOGGER.info("Missing token prices without counterparty leg count=%s", missing_no_leg)
+    missing_mints = sorted(
+        {
+            (e.base_token or e.quote_token).mint
+            for e in events_list
+            if e.raw.get("valuation_method") == "missing_token_price_no_counterparty_leg" and (e.base_token or e.quote_token)
+        }
+    )
+    LOGGER.info("Missing token prices without counterparty leg count=%s unique_mints=%s", missing_no_leg, len(missing_mints))
     LOGGER.info("Ambiguous swap valuations count=%s", ambiguous)
     return ctx.warnings
 
@@ -91,6 +102,9 @@ def valuate_event(event: NormalizedEvent, ctx: ValuationContext) -> ValuationRes
             event,
             "missing_token_price_no_counterparty_leg",
             f"Price unavailable without counterparty leg for mint={token.mint} at {event.ts.isoformat()}",
+            mint=token.mint,
+            amount=token.amount,
+            reason="missing_token_price_no_counterparty_leg",
         )
         event.raw["valuation_method"] = "missing_token_price_no_counterparty_leg"
         _mark_unpriced(event)
@@ -171,7 +185,7 @@ def _swap_valuation_map(
         sol_out_qty = sum((amt for mint, amt in outs.items() if _is_sol(mint)), Decimal("0"))
         if len(token_ins) + len(token_outs) > 1:
             for event in group:
-                ctx.warn(event, "ambiguous_multi_token_swap", f"valuation_method_unavailable: ambiguous_multi_token_swap signature={signature}")
+                ctx.warn(event, "ambiguous_multi_token_swap", f"valuation_method_unavailable: ambiguous_multi_token_swap signature={signature}", reason="ambiguous_multi_token_swap")
                 event.raw["valuation_method"] = "ambiguous_multi_token_swap"
                 results[event.id] = ValuationResult(None, None, "unpriced", "ambiguous_multi_token_swap")
             continue

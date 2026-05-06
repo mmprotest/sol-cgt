@@ -124,27 +124,17 @@ class AccountingEngine:
                             ),
                         ) from exc
                     if issue is not None:
-                        synthetic = self._add_synthetic_lot(issue, event, source_type="synthetic_missing_basis")
-                        acquisitions.append(synthetic)
+                        event.raw["accounting_action"] = "manual_review"
+                        event.raw["manual_review_reason"] = "missing_lot_history"
                         warnings.append(
                             WarningRecord(
                                 ts=event.ts,
                                 wallet=event.wallet,
                                 signature=event.raw.get("signature"),
-                                code="missing_lots_synthetic",
-                                message=(
-                                    "Synthetic acquisition lot created to cover missing basis; "
-                                    "gain/loss results are unreliable."
-                                ),
+                                code="missing_lot_history",
+                                message="Missing lot history for transfer; event excluded from taxable accounting.",
                             )
                         )
-                        move_record, moved_lots = self._handle_self_transfer(
-                            match_by_out[event.id],
-                            warnings,
-                            missing_price_warned,
-                        )
-                        lot_moves.append(move_record)
-                        acquisitions.extend(moved_lots)
                         continue
                     raise
             if event.kind == "transfer_out" and event.base_token is not None:
@@ -254,24 +244,18 @@ class AccountingEngine:
                         ) from exc
                     if issue is None:
                         raise
-                    synthetic = self._add_synthetic_lot(issue, event, source_type="synthetic_missing_basis")
-                    acquisitions.append(synthetic)
+                    event.raw["accounting_action"] = "manual_review"
+                    event.raw["manual_review_reason"] = "missing_lot_history"
                     warnings.append(
                         WarningRecord(
                             ts=event.ts,
                             wallet=event.wallet,
                             signature=event.raw.get("signature"),
-                            code="missing_lots_synthetic",
-                            message=(
-                                "Synthetic acquisition lot created to cover missing basis; "
-                                "gain/loss results are unreliable."
-                            ),
+                            code="missing_lot_history",
+                            message="Missing lot history for disposal; event excluded from taxable accounting.",
                         )
                     )
-                    new_records = self._handle_disposal(event, base_token, proceeds_aud, fee_aud)
-                    for record in new_records:
-                        record.notes = _append_note(record.notes, "unreliable_missing_lots")
-                    disposals.extend(new_records)
+                    continue
             if quote_token is not None and quote_token.amount > 0:
                 acquisitions.append(
                     self._handle_acquisition(

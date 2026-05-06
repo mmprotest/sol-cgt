@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Iterable
 
 from ..types import DisposalRecord
+from ..types import NormalizedEvent
 
 
 def summarize_by_token(disposals: Iterable[DisposalRecord]) -> list[dict[str, object]]:
@@ -108,6 +109,44 @@ def summarize_by_wallet(disposals: Iterable[DisposalRecord]) -> list[dict[str, o
                 "net_gain_loss_aud": float(data["gain_loss_aud"]),
                 "discount_eligible_gain_aud": float(data["discount_eligible_gain_aud"]),
                 "disposals": int(data["disposals"]),
+            }
+        )
+    return rows
+
+
+def build_transaction_summary(events: Iterable[NormalizedEvent]) -> list[dict[str, object]]:
+    by_sig: dict[str, list[NormalizedEvent]] = defaultdict(list)
+    for event in events:
+        sig = event.raw.get("signature") or event.id.split("#")[0]
+        by_sig[str(sig)].append(event)
+    rows: list[dict[str, object]] = []
+    for signature, sig_events in sorted(by_sig.items()):
+        kinds = {e.kind for e in sig_events}
+        if any(e.raw.get("accounting_action") == "manual_review" for e in sig_events):
+            classification = "manual_review"
+        elif "swap" in kinds or any("swap" in str(e.raw.get("classification", "")) for e in sig_events):
+            classification = "trade"
+        elif kinds == {"transfer_in"}:
+            classification = "deposit"
+        elif kinds == {"transfer_out"}:
+            classification = "withdrawal"
+        elif "transfer_internal" in kinds or any(e.raw.get("is_internal_transfer") for e in sig_events):
+            classification = "internal_transfer"
+        elif all((e.base_token is None and e.quote_token is None and e.fee_sol > 0) for e in sig_events):
+            classification = "fee_only"
+        elif all(e.raw.get("accounting_action") == "ignore_dust" for e in sig_events):
+            classification = "dust_or_noise"
+        elif len(kinds) > 1:
+            classification = "mixed_or_ambiguous"
+        else:
+            classification = "mixed_or_ambiguous"
+        rows.append(
+            {
+                "signature": signature,
+                "timestamp": min(e.ts for e in sig_events).isoformat(),
+                "event_count": len(sig_events),
+                "classification": classification,
+                "wallets": ",".join(sorted({e.wallet for e in sig_events})),
             }
         )
     return rows

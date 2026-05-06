@@ -197,6 +197,18 @@ def _lot_move_rows(lot_moves: Sequence[LotMoveRecord]) -> list[dict[str, str]]:
     return rows
 
 
+def _excel_safe(value: object) -> object:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (dict, list, tuple, set)):
+        return utils.json_dumps(value)
+    return value
+
+
 def export_xlsx(
     path: Path,
     *,
@@ -305,10 +317,7 @@ def export_xlsx(
         for warning in warnings:
             row = []
             for value in warning.model_dump().values():
-                if hasattr(value, "isoformat"):
-                    row.append(value.isoformat())
-                else:
-                    row.append(value)
+                row.append(_excel_safe(value))
             warnings_sheet.append(row)
         _apply_header_style(warnings_sheet)
         _auto_width(warnings_sheet)
@@ -338,10 +347,7 @@ def export_xlsx(
             row = []
             for key in columns:
                 value = payload.get(key)
-                if hasattr(value, "isoformat"):
-                    row.append(value.isoformat())
-                else:
-                    row.append(value)
+                row.append(_excel_safe(value))
             missing_sheet.append(row)
         bold = Font(bold=True)
         for cell in missing_sheet[2]:
@@ -357,7 +363,7 @@ def export_xlsx(
         headers = list(rows[0].keys())
         sheet.append(headers)
         for row in rows:
-            sheet.append([row.get(h) for h in headers])
+            sheet.append([_excel_safe(row.get(h)) for h in headers])
         _apply_header_style(sheet)
         _auto_width(sheet)
 

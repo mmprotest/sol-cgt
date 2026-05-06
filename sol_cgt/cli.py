@@ -218,7 +218,7 @@ def _ensure_cache_coverage(wallets: list[str], *, gte_time: Optional[int], lte_t
                 reason = str(missing.get("reason", "unknown"))
                 logger.info("Raw cache missing range wallet=%s start=%s end=%s reason=%s", addr, start, end, reason)
                 before_count = len(fetch_mod.load_cached(addr))
-                asyncio.run(
+                rows = asyncio.run(
                     fetch_mod.fetch_wallet(
                         addr,
                         api_key=settings.api_keys.helius,
@@ -234,11 +234,29 @@ def _ensure_cache_coverage(wallets: list[str], *, gte_time: Optional[int], lte_t
                 added = max(0, after_count - before_count)
                 had_additions = had_additions or added > 0
                 logger.info("Raw cache fetch complete wallet=%s added=%s total=%s", addr, added, after_count)
+                if refresh_raw_cache and reason == "refresh":
+                    checked = fetch_mod.get_provider_checked_ranges(addr)
+                    if checked:
+                        latest = checked[-1]
+                        logger.info(
+                            "Raw provider range verified wallet=%s provider=%s start=%s end=%s exhausted=%s rows=%s unique=%s earliest_returned=%s latest_returned=%s",
+                            addr,
+                            latest.get("provider"),
+                            latest.get("checked_start"),
+                            latest.get("checked_end"),
+                            latest.get("exhausted"),
+                            latest.get("rows_returned"),
+                            latest.get("unique_signatures"),
+                            latest.get("earliest_returned_timestamp"),
+                            latest.get("latest_returned_timestamp"),
+                        )
             if not had_additions:
+                break
+            if refresh_raw_cache:
                 break
         coverage = fetch_mod.inspect_raw_cache_coverage(addr, gte_time, lte_time)
         coverage_by_wallet[addr] = coverage
-        logger.info("Raw cache coverage verified wallet=%s complete=%s count=%s cache_min=%s cache_max=%s", addr, coverage.coverage_complete, coverage.raw_tx_count, coverage.cache_min_timestamp, coverage.cache_max_timestamp)
+        logger.info("Raw cache coverage verified wallet=%s complete=%s reason=%s count=%s cache_min=%s cache_max=%s", addr, coverage.coverage_complete, coverage.coverage_complete_reason, coverage.raw_tx_count, coverage.cache_min_timestamp, coverage.cache_max_timestamp)
         if not coverage.coverage_complete:
             complete = False
             if not fetch:
@@ -742,6 +760,16 @@ def compute(
             reconciliation_summary[0]["expected_transaction_count"] = expected_transaction_count
             reconciliation_summary[0]["expected_count_delta"] = delta
             reconciliation_summary[0]["reconciliation_status"] = "ok" if delta == 0 else "mismatch"
+        if coverage_by_wallet:
+            first_wallet = wallets[0]
+            checked = coverage_by_wallet[first_wallet].provider_checked_ranges or []
+            latest = checked[-1] if checked else {}
+            reconciliation_summary[0]["provider_checked_start"] = latest.get("checked_start")
+            reconciliation_summary[0]["provider_checked_end"] = latest.get("checked_end")
+            reconciliation_summary[0]["provider_exhausted"] = latest.get("exhausted")
+            reconciliation_summary[0]["coverage_complete_reason"] = coverage_by_wallet[first_wallet].coverage_complete_reason
+            reconciliation_summary[0]["earliest_returned_timestamp"] = latest.get("earliest_returned_timestamp")
+            reconciliation_summary[0]["latest_returned_timestamp"] = latest.get("latest_returned_timestamp")
     excluded_events = [*eligibility.manual_review, *eligibility.dust_ignored]
     summary_by_token = summaries.summarize_by_token(disposals)
     summary_overall = summaries.summarize_overall(disposals)

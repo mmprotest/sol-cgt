@@ -48,3 +48,37 @@ def test_unanchored_ambiguous_group_stays_manual_review():
     res = apply_accounting_policy([a_out, b_in, c_in], sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
     assert len(res.taxable_events) == 0
     assert len(res.manual_review) == 3
+
+
+def test_medium_confidence_inferred_transfer_out_goes_manual_review_not_taxable():
+    ev = _ev(
+        "transfer_out",
+        base=_tok("abc", 1000),
+        raw={
+            "source": "helius_token_transfer",
+            "valuation_method": "inferred_from_same_signature_anchor",
+            "valuation_confidence": "medium",
+            "proceeds_hint_aud": "120.00",
+        },
+    )
+    res = apply_accounting_policy([ev], sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
+    assert len(res.taxable_events) == 0
+    assert len(res.manual_review) == 1
+    assert ev.raw["accounting_action"] == "manual_review"
+
+
+def test_medium_confidence_inferred_transfer_in_goes_manual_review_not_taxable():
+    ev = _ev(
+        "transfer_in",
+        quote=_tok("abc", 1000),
+        raw={
+            "source": "helius_token_transfer",
+            "valuation_method": "inferred_from_same_signature_anchor",
+            "valuation_confidence": "medium",
+            "cost_hint_aud": "120.00",
+        },
+    )
+    res = apply_accounting_policy([ev], sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
+    assert len(res.taxable_events) == 0
+    assert len(res.manual_review) == 1
+    assert ev.raw["accounting_action"] == "manual_review"

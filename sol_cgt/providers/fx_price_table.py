@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -13,6 +14,7 @@ import httpx
 CACHE_PATH = Path(".sol_cgt_cache") / "fx" / "usd_aud_daily.csv"
 BASE_URL = "https://api.frankfurter.dev"
 SOURCE = "frankfurter"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -80,32 +82,47 @@ async def _download_range(start_date: date, end_date: date) -> dict[date, FxDail
         resp = await client.get(f"{BASE_URL}/v2/rates", params=params)
         resp.raise_for_status()
         payload = resp.json()
-    rates = payload.get("rates") if isinstance(payload, dict) else None
-    if not isinstance(rates, dict):
-        raise RuntimeError("Missing rates from Frankfurter response")
     parsed: dict[date, FxDailyRate] = {}
-    for day_raw, quote_map in rates.items():
-        if not isinstance(quote_map, dict) or "AUD" not in quote_map:
-            continue
-        day = date.fromisoformat(day_raw)
-        if day < start_date or day > end_date:
-            continue
-        parsed[day] = FxDailyRate(day=day, usd_to_aud=_parse_decimal(str(quote_map["AUD"])), source=SOURCE)
+    if isinstance(payload, list):
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            day_raw = item.get("date")
+            base = item.get("base")
+            quote = item.get("quote")
+            rate = item.get("rate")
+            if not day_raw or base != "USD" or quote != "AUD" or rate is None:
+                continue
+            day = date.fromisoformat(str(day_raw))
+            if start_date <= day <= end_date:
+                parsed[day] = FxDailyRate(day=day, usd_to_aud=_parse_decimal(str(rate)), source=SOURCE)
+    elif isinstance(payload, dict):
+        rates = payload.get("rates")
+        if isinstance(rates, dict):
+            for day_raw, quote_map in rates.items():
+                if not isinstance(quote_map, dict) or "AUD" not in quote_map:
+                    continue
+                day = date.fromisoformat(str(day_raw))
+                if start_date <= day <= end_date:
+                    parsed[day] = FxDailyRate(day=day, usd_to_aud=_parse_decimal(str(quote_map["AUD"])), source=SOURCE)
+    if not parsed:
+        raise RuntimeError("Missing rates from Frankfurter response")
+    LOGGER.info("USD/AUD FX download source=frankfurter start=%s end=%s rows=%s", start_date.isoformat(), end_date.isoformat(), len(parsed))
     return parsed
 
 
 async def ensure_usd_aud_daily_rates(start_date: date, end_date: date) -> Path:
     path = CACHE_PATH
     cache = _read_cache(path)
-    missing = _missing_dates(cache, start_date, end_date)
-    if not missing:
-        return path
-    for range_start, range_end in _collapse_ranges(missing):
-        cache.update(await _download_range(range_start, range_end))
-    still_missing = _missing_dates(cache, start_date, end_date)
-    if still_missing:
-        raise RuntimeError(f"USD/AUD FX table incomplete requested={start_date}..{end_date} missing={still_missing[0]}..{still_missing[-1]}")
-    _write_cache(path, cache.values())
+    downloaded = await _download_range(start_date, end_date)
+    if downloaded:
+        cache.update(downloaded)
+        _write_cache(path, cache.values())
+    if not cache:
+        raise RuntimeError(f"USD/AUD FX table empty for requested range {start_date}..{end_date}")
+    in_range = [d for d in cache if start_date <= d <= end_date]
+    if not in_range:
+        raise RuntimeError(f"USD/AUD FX table has no rates in requested range {start_date}..{end_date}")
     return path
 
 
@@ -114,14 +131,14 @@ def get_usd_aud_for_date(day: date) -> Decimal | None:
     return row.usd_to_aud if row else None
 
 
-def get_usd_aud_for_date_or_prior(day: date) -> Decimal | None:
+def get_usd_aud_for_date_or_prior(day: date, *, max_fallback_days: int = 10) -> Decimal | None:
     cache = _read_cache(CACHE_PATH)
-    if day in cache:
-        return cache[day].usd_to_aud
-    prior = [d for d in cache if d <= day]
-    if not prior:
-        return None
-    return cache[max(prior)].usd_to_aud
+    for offset in range(0, max_fallback_days + 1):
+        probe = day - timedelta(days=offset)
+        row = cache.get(probe)
+        if row is not None:
+            return row.usd_to_aud
+    return None
 
 
 def cache_stats(path: Path) -> tuple[int, date | None, date | None]:

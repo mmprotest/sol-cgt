@@ -419,7 +419,7 @@ class AccountingEngine:
             else:
                 total_cost = utils.quantize_aud(price * qty)
         lot_fee = fee_aud if event.base_token is None else Decimal("0")
-        unit_cost = utils.quantize_aud(total_cost / qty) if qty != 0 else Decimal("0")
+        unit_cost = utils.quantize_unit_cost_aud(total_cost / qty) if qty != 0 else Decimal("0")
         lot = AcquisitionLot(
             lot_id=f"{event.id}:{quote.mint}",
             wallet=event.wallet,

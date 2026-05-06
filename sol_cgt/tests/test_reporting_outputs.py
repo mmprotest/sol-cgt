@@ -138,6 +138,9 @@ def test_csv_and_xlsx_outputs(tmp_path) -> None:
     tx_headers = [cell.value for cell in workbook["Transactions"][1]]
     assert "valuation_method" in tx_headers
     assert "valuation_reference_asset" in tx_headers
+    lots_headers = [cell.value for cell in workbook["Lots"][1]]
+    unit_cost_col = lots_headers.index("unit_cost_aud") + 1
+    assert workbook["Lots"].cell(row=2, column=unit_cost_col).number_format == "#,##0.000000000000"
 
 
 def test_parquet_requires_extra(monkeypatch, tmp_path) -> None:

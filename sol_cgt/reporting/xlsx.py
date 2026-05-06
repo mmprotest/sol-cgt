@@ -283,7 +283,7 @@ def export_xlsx(
         for row in lot_rows:
             lots_sheet.append(list(row.values()))
         _apply_header_style(lots_sheet)
-        _format_numbers(lots_sheet, ["unit_cost_aud"], "#,##0.00")
+        _format_numbers(lots_sheet, ["unit_cost_aud"], "#,##0.000000000000")
         _format_numbers(lots_sheet, ["remaining_qty", "qty_acquired"], "#,##0.000000000")
         _auto_width(lots_sheet)
 

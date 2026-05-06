@@ -382,6 +382,8 @@ def fetch(
     fy_end: Optional[str] = typer.Option(None, "--fy-end", help="Financial year end (YYYY-MM-DD)"),
     append: bool = typer.Option(False, "--append", help="Append to cache instead of overwriting"),
     helius_token_accounts: str = typer.Option("balanceChanged", "--helius-token-accounts", help="Helius tokenAccounts filter: balanceChanged|all|none"),
+    helius_history_provider: str = typer.Option("auto", "--helius-history-provider", help="Helius history provider: auto|enhanced|getTransactionsForAddress"),
+    helius_rate_limit_rps: float = typer.Option(2.0, "--helius-rate-limit-rps", help="Helius request rate limit (requests/sec)"),
 ) -> None:
     """Fetch raw transactions for the supplied wallets."""
 
@@ -413,6 +415,9 @@ def fetch(
             lte_time=lte_time,
             max_pages=resolved_max_pages,
             append=append_flag,
+            provider=helius_history_provider,
+            token_accounts=helius_token_accounts,
+            rate_limit_rps=helius_rate_limit_rps,
         )
     )
     typer.echo(f"Fetched transactions for {len(wallets)} wallet(s)")
@@ -437,6 +442,10 @@ def compute(
         help="Fetch txs from Helius if cache is empty or missing",
     ),
     refresh_raw_cache: bool = typer.Option(False, "--refresh-raw-cache", help="Refetch requested raw transaction window even if cache appears complete"),
+    helius_history_provider: str = typer.Option("auto", "--helius-history-provider", help="Helius history provider: auto|enhanced|getTransactionsForAddress"),
+    helius_token_accounts: str = typer.Option("balanceChanged", "--helius-token-accounts", help="Helius tokenAccounts filter: balanceChanged|all|none"),
+    helius_rate_limit_rps: float = typer.Option(2.0, "--helius-rate-limit-rps", help="Helius request rate limit (requests/sec)"),
+    expected_transaction_count: Optional[int] = typer.Option(None, "--expected-transaction-count", help="Optional expected unique signature count for diagnostics"),
     prefetch_mints: bool = typer.Option(
         True,
         "--prefetch-mints/--no-prefetch-mints",
@@ -507,6 +516,9 @@ def compute(
                         max_pages=settings.helius_max_pages,
                         gte_time=gte_time,
                         lte_time=lte_time,
+                        provider=helius_history_provider,
+                        token_accounts=helius_token_accounts,
+                        rate_limit_rps=helius_rate_limit_rps,
                     )
                 )
             else:
@@ -721,6 +733,15 @@ def compute(
     raw_signatures = {str((item.get("signature") or item.get("id"))) for addr in wallets for item in fetch_mod.load_cached(addr) if (item.get("signature") or item.get("id"))}
     transaction_summary = summaries.build_transaction_summary(scoped_events)
     reconciliation_summary = summaries.build_reconciliation_summary(raw_signatures, transaction_summary, scoped_events)
+    if reconciliation_summary:
+        reconciliation_summary[0]["history_provider"] = "enhanced" if helius_history_provider == "auto" else helius_history_provider
+        reconciliation_summary[0]["token_accounts_mode"] = helius_token_accounts
+        reconciliation_summary[0]["refreshed_this_run"] = refresh_raw_cache
+        if expected_transaction_count is not None:
+            delta = len(raw_signatures) - expected_transaction_count
+            reconciliation_summary[0]["expected_transaction_count"] = expected_transaction_count
+            reconciliation_summary[0]["expected_count_delta"] = delta
+            reconciliation_summary[0]["reconciliation_status"] = "ok" if delta == 0 else "mismatch"
     excluded_events = [*eligibility.manual_review, *eligibility.dust_ignored]
     summary_by_token = summaries.summarize_by_token(disposals)
     summary_overall = summaries.summarize_overall(disposals)

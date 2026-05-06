@@ -7,12 +7,26 @@ import logging
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+import httpx
 from .. import utils
 from ..providers import helius
 
 RAW_CACHE_DIR = utils.ensure_cache_dir("raw")
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FetchStats:
+    wallet: str
+    provider: str
+    token_accounts_mode: str
+    pages: int
+    rows_returned: int
+    unique_signatures: int
+    duplicate_signatures: int
+    earliest_timestamp: Optional[int]
+    latest_timestamp: Optional[int]
 
 
 @dataclass
@@ -53,6 +67,9 @@ async def fetch_wallet(
     lte_time: Optional[int] = None,
     max_pages: int = 2000,
     append: bool = False,
+    provider: str = "enhanced",
+    token_accounts: str = "balanceChanged",
+    rate_limit_rps: float = 2.0,
 ) -> list[dict]:
     all_txs: list[dict] = []
     cursor = None
@@ -69,23 +86,39 @@ async def fetch_wallet(
     rows_returned = 0
     min_ts: Optional[int] = None
     max_ts: Optional[int] = None
+    if provider not in {"enhanced", "getTransactionsForAddress", "auto"}:
+        raise RuntimeError(f"Unsupported Helius history provider: {provider}")
+    selected_provider = "enhanced" if provider == "auto" else provider
     for page_idx in range(max_pages):
         if gte_time is None or lte_time is None:
-            raise RuntimeError("fetch_wallet requires gte_time and lte_time for getTransactionsForAddress")
-        response = await helius.fetch_wallet_transactions_for_period_v2(
-            wallet,
-            gte_time,
-            lte_time,
-            token_accounts="balanceChanged",
-            status="succeeded",
-            transaction_details="full",
-            sort_order="asc",
-            limit=limit,
-            api_key=api_key,
-            rpc_url=base_url,
-            pagination_token=cursor,
-        )
-        page = response.get("data", [])
+            raise RuntimeError("fetch_wallet requires gte_time and lte_time")
+        if selected_provider == "getTransactionsForAddress":
+            try:
+                response = await helius.fetch_wallet_transactions_for_period_v2(
+                    wallet, gte_time, lte_time, token_accounts=token_accounts, status="succeeded", transaction_details="full",
+                    sort_order="asc", limit=limit, api_key=api_key, rpc_url=base_url, pagination_token=cursor,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 403 and provider == "auto":
+                    logger.warning("Helius getTransactionsForAddress unavailable (403) for wallet=%s, falling back to enhanced provider in auto mode", wallet)
+                    selected_provider = "enhanced"
+                    page = await helius.fetch_txs(
+                        wallet, limit=limit, api_key=api_key, base_url=helius.DEFAULT_BASE_URL, gte_time=gte_time, lte_time=lte_time,
+                        before_signature=cursor, sort_order="desc", token_accounts=token_accounts,
+                    )
+                    cursor = str(page[-1].get("signature")) if page and page[-1].get("signature") else None
+                    response = None
+                else:
+                    raise RuntimeError("Helius getTransactionsForAddress is unavailable for this API key (HTTP 403).") from exc
+            if response is not None:
+                page = response.get("data", [])
+                cursor = response.get("paginationToken")
+        else:
+            page = await helius.fetch_txs(
+                wallet, limit=limit, api_key=api_key, base_url=helius.DEFAULT_BASE_URL, gte_time=gte_time, lte_time=lte_time,
+                before_signature=cursor, sort_order="desc", token_accounts=token_accounts,
+            )
+            cursor = str(page[-1].get("signature")) if page and page[-1].get("signature") else None
         if not page:
             logger.info("No more transactions for wallet=%s after page=%s", wallet, page_idx + 1)
             break
@@ -96,18 +129,19 @@ async def fetch_wallet(
             if isinstance(ts, int):
                 min_ts = ts if min_ts is None else min(min_ts, ts)
                 max_ts = ts if max_ts is None else max(max_ts, ts)
-        cursor = response.get("paginationToken")
-        page_ts = [row.get("blockTime") for row in page if isinstance(row.get("blockTime"), int)]
+        page_ts = [row.get("timestamp") for row in page if isinstance(row.get("timestamp"), int)]
         logger.info(
-            "Fetched wallet=%s page=%s items=%s total=%s pagination_token_present=%s earliest_blockTime=%s latest_blockTime=%s",
+            "Fetched wallet=%s provider=%s page=%s rows=%s total=%s cursor=%s earliest_timestamp=%s latest_timestamp=%s",
             wallet,
+            selected_provider,
             page_idx + 1,
             len(page),
             len(all_txs),
-            bool(cursor),
+            cursor,
             min(page_ts) if page_ts else None,
             max(page_ts) if page_ts else None,
         )
+        await asyncio.sleep(1.0 / max(rate_limit_rps, 0.1))
         if not cursor:
             break
     else:
@@ -129,14 +163,16 @@ async def fetch_wallet(
     duplicate_signatures = max(0, rows_returned - unique_signatures)
     all_block_times = [row.get("blockTime") for row in deduped if isinstance(row.get("blockTime"), int)]
     logger.info(
-        "Completed fetch wallet=%s pages=%s rows=%s unique_signatures=%s duplicate_signatures=%s earliest_blockTime=%s latest_blockTime=%s cache_path=%s",
+        "Completed fetch wallet=%s provider=%s token_accounts_mode=%s pages=%s rows_returned=%s unique_signatures=%s duplicate_signatures=%s earliest_timestamp=%s latest_timestamp=%s cache_path=%s",
         wallet,
+        selected_provider,
+        token_accounts,
         page_idx + 1 if all_txs else 0,
         rows_returned,
         unique_signatures,
         duplicate_signatures,
-        min(all_block_times) if all_block_times else None,
-        max(all_block_times) if all_block_times else None,
+        min_ts,
+        max_ts,
         path,
     )
     return deduped
@@ -154,6 +190,9 @@ async def fetch_many(
     lte_time: Optional[int] = None,
     max_pages: int = 2000,
     append: bool = False,
+    provider: str = "enhanced",
+    token_accounts: str = "balanceChanged",
+    rate_limit_rps: float = 2.0,
 ) -> dict[str, list[dict]]:
     results: dict[str, list[dict]] = {}
     async def _fetch(wallet: str) -> None:
@@ -168,9 +207,12 @@ async def fetch_many(
             lte_time=lte_time,
             max_pages=max_pages,
             append=append,
+            provider=provider,
+            token_accounts=token_accounts,
+            rate_limit_rps=rate_limit_rps,
         )
-
-    await asyncio.gather(*[_fetch(wallet) for wallet in wallets])
+    for wallet in wallets:
+        await _fetch(wallet)
     return results
 
 

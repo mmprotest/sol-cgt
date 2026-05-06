@@ -40,6 +40,7 @@ async def test_fetch_txs_clamps_limit(monkeypatch) -> None:
     assert captured[0]["after-signature"] == "after"
     assert captured[0]["gte-time"] == 1_000
     assert captured[0]["lte-time"] == 2_000
+    assert captured[0]["token-accounts"] == "balanceChanged"
 
 
 @pytest.mark.asyncio

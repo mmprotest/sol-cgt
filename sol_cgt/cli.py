@@ -397,8 +397,8 @@ def compute(
         "--max-backfill-days",
         help="Maximum days to backfill when auto-backfill is enabled",
     ),
-    sol_dust_threshold: Decimal = typer.Option(Decimal("0.00001"), "--sol-dust-threshold", help="SOL dust threshold"),
-    aud_dust_threshold: Decimal = typer.Option(Decimal("0.01"), "--aud-dust-threshold", help="AUD dust threshold"),
+    sol_dust_threshold: str = typer.Option("0.00001", "--sol-dust-threshold", help="SOL dust threshold"),
+    aud_dust_threshold: str = typer.Option("0.01", "--aud-dust-threshold", help="AUD dust threshold"),
     include_dust: bool = typer.Option(False, "--include-dust", help="Include dust events"),
     strict: bool = typer.Option(False, "--strict", help="Fail if unsafe taxable rows are detected"),
 ) -> None:
@@ -497,6 +497,9 @@ def compute(
         typer.echo(f"Loaded {len(scoped_events)} normalized events across {len(wallets)} wallet(s)")
         return
     missing_lot_issues: list[MissingLotIssue] = []
+    sol_dust_threshold_dec = Decimal(str(sol_dust_threshold))
+    aud_dust_threshold_dec = Decimal(str(aud_dust_threshold))
+
     valuation_warnings = valuation_module.valuate_events(
         scoped_events,
         valuation_module.ValuationContext(
@@ -506,8 +509,8 @@ def compute(
     )
     eligibility = apply_accounting_policy(
         scoped_events,
-        sol_dust_threshold=sol_dust_threshold,
-        aud_dust_threshold=aud_dust_threshold,
+        sol_dust_threshold=sol_dust_threshold_dec,
+        aud_dust_threshold=aud_dust_threshold_dec,
         include_dust=include_dust,
     )
     result, stopped_for_missing = _run_accounting(
@@ -565,6 +568,7 @@ def compute(
                     fy_end,
                 )
             missing_lot_issues.clear()
+
             valuation_warnings = valuation_module.valuate_events(
                 scoped_events,
                 valuation_module.ValuationContext(

@@ -10,11 +10,8 @@ def test_sol_price_via_local_table(monkeypatch) -> None:
     def fake_sol_price(*args, **kwargs):
         return Decimal("20")
 
-    async def fake_fx(day):
-        return Decimal("1.5")
-
     monkeypatch.setattr(pricing.sol_price_table, "get_sol_usd_close_for_date", fake_sol_price)
-    monkeypatch.setattr(pricing.fx_rates, "usd_to_aud_rate", fake_fx)
+    monkeypatch.setattr(pricing.fx_price_table, "get_usd_aud_for_date_or_prior", lambda _day: Decimal("1.5"))
 
     provider = pricing.AudPriceProvider(api_key="key")
     ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -22,10 +19,7 @@ def test_sol_price_via_local_table(monkeypatch) -> None:
 
 
 def test_stablecoin_conversion(monkeypatch) -> None:
-    async def fake_fx(day):
-        return Decimal("1.5")
-
-    monkeypatch.setattr(pricing.fx_rates, "usd_to_aud_rate", fake_fx)
+    monkeypatch.setattr(pricing.fx_price_table, "get_usd_aud_for_date_or_prior", lambda _day: Decimal("1.5"))
 
     provider = pricing.AudPriceProvider()
     ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -33,10 +27,7 @@ def test_stablecoin_conversion(monkeypatch) -> None:
 
 
 def test_non_sol_token_unpriced(monkeypatch, tmp_path) -> None:
-    async def fake_fx(day):
-        return Decimal("1.0")
-
-    monkeypatch.setattr(pricing.fx_rates, "usd_to_aud_rate", fake_fx)
+    monkeypatch.setattr(pricing.fx_price_table, "get_usd_aud_for_date_or_prior", lambda _day: Decimal("1.0"))
 
     cache = pricing.PriceCache(tmp_path)
     usd_provider = pricing.TimestampPriceProvider(api_key="key", cache=cache)
@@ -46,10 +37,7 @@ def test_non_sol_token_unpriced(monkeypatch, tmp_path) -> None:
 
 
 def test_sol_price_missing_warns(monkeypatch, caplog) -> None:
-    async def fake_fx(day):
-        return Decimal("1")
-
-    monkeypatch.setattr(pricing.fx_rates, "usd_to_aud_rate", fake_fx)
+    monkeypatch.setattr(pricing.fx_price_table, "get_usd_aud_for_date_or_prior", lambda _day: Decimal("1"))
     monkeypatch.setattr(pricing.sol_price_table, "get_sol_usd_close_for_date", lambda *_: None)
 
     provider = pricing.AudPriceProvider(api_key="key")

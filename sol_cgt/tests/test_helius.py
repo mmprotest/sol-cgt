@@ -72,3 +72,29 @@ async def test_fetch_txs_uses_signature_params(monkeypatch) -> None:
     assert captured
     assert captured[0]["before-signature"] == "sig-1"
     assert captured[0]["after-signature"] == "sig-0"
+
+
+@pytest.mark.asyncio
+async def test_fetch_wallet_transactions_for_period_v2_request_body(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def fake_perform_rpc_request(_: object, __: str, body: dict[str, object]) -> dict[str, object]:
+        captured.append(body)
+        return {"result": {"data": [], "paginationToken": None}}
+
+    monkeypatch.setattr(helius, "_perform_rpc_request", fake_perform_rpc_request)
+    await helius.fetch_wallet_transactions_for_period_v2(
+        "wallet",
+        1_000,
+        2_000,
+        api_key="key",
+        rpc_url="https://mainnet.helius-rpc.com/",
+    )
+    params = captured[0]["params"][1]
+    assert captured[0]["method"] == "getTransactionsForAddress"
+    assert params["transactionDetails"] == "full"
+    assert params["sortOrder"] == "asc"
+    assert params["filters"]["blockTime"]["gte"] == 1_000
+    assert params["filters"]["blockTime"]["lte"] == 2_000
+    assert params["filters"]["status"] == "succeeded"
+    assert params["filters"]["tokenAccounts"] == "balanceChanged"

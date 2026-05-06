@@ -122,7 +122,7 @@ def _load_and_normalize(
                     fetch_mod.fetch_wallet(
                         addr,
                         api_key=settings.api_keys.helius,
-                        base_url=settings.helius_enhanced_base_url,
+                        base_url=_resolve_rpc_url(settings),
                         limit=settings.helius_tx_limit,
                         max_pages=settings.helius_max_pages,
                         gte_time=gte_time,
@@ -222,7 +222,7 @@ def _ensure_cache_coverage(wallets: list[str], *, gte_time: Optional[int], lte_t
                     fetch_mod.fetch_wallet(
                         addr,
                         api_key=settings.api_keys.helius,
-                        base_url=settings.helius_enhanced_base_url,
+                        base_url=_resolve_rpc_url(settings),
                         limit=settings.helius_tx_limit,
                         max_pages=settings.helius_max_pages,
                         gte_time=start,
@@ -381,6 +381,7 @@ def fetch(
     fy_start: Optional[str] = typer.Option(None, "--fy-start", help="Financial year start (YYYY-MM-DD)"),
     fy_end: Optional[str] = typer.Option(None, "--fy-end", help="Financial year end (YYYY-MM-DD)"),
     append: bool = typer.Option(False, "--append", help="Append to cache instead of overwriting"),
+    helius_token_accounts: str = typer.Option("balanceChanged", "--helius-token-accounts", help="Helius tokenAccounts filter: balanceChanged|all|none"),
 ) -> None:
     """Fetch raw transactions for the supplied wallets."""
 
@@ -393,7 +394,7 @@ def fetch(
     if not wallets:
         raise typer.BadParameter("No wallets provided")
     api_key = settings.api_keys.helius
-    base_url = settings.helius_enhanced_base_url
+    base_url = _resolve_rpc_url(settings)
     resolved_limit = limit if limit is not None else settings.helius_tx_limit
     resolved_max_pages = max_pages if max_pages is not None else settings.helius_max_pages
     _, fy_period = _resolve_fy_period(fy, fy_start, fy_end)

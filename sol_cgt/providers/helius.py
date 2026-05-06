@@ -12,6 +12,7 @@ from tenacity import RetryError, retry, retry_if_exception, stop_after_attempt, 
 from .. import utils
 
 DEFAULT_BASE_URL = "https://api-mainnet.helius-rpc.com"
+DEFAULT_RPC_URL = "https://mainnet.helius-rpc.com/"
 HELIUS_TX_LIMIT_MAX = 100
 
 logger = logging.getLogger(__name__)
@@ -124,3 +125,65 @@ async def fetch_txs(
             raise exc.last_attempt.exception() if exc.last_attempt else exc
     await _write_cache(cache_key, payload)
     return payload
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception(_should_retry),
+)
+async def _perform_rpc_request(client: httpx.AsyncClient, rpc_url: str, body: dict[str, Any]) -> dict[str, Any]:
+    response = await client.post(rpc_url, json=body)
+    if response.status_code == 429 or response.status_code >= 500:
+        raise httpx.HTTPStatusError("Retryable Helius error", request=response.request, response=response)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Unexpected RPC payload from Helius")
+    return payload
+
+
+async def fetch_wallet_transactions_for_period_v2(
+    wallet: str,
+    start_ts: int,
+    end_ts: int,
+    *,
+    token_accounts: str = "balanceChanged",
+    status: str = "succeeded",
+    transaction_details: str = "full",
+    sort_order: str = "asc",
+    limit: int = HELIUS_TX_LIMIT_MAX,
+    api_key: Optional[str] = None,
+    rpc_url: Optional[str] = None,
+    pagination_token: Optional[str] = None,
+) -> dict[str, Any]:
+    api_key = api_key or os.getenv("HELIUS_API_KEY")
+    if not api_key:
+        raise RuntimeError("HELIUS_API_KEY is required to fetch transactions")
+    rpc_url = (rpc_url or os.getenv("HELIUS_RPC_URL") or DEFAULT_RPC_URL).strip()
+    if "api-key=" not in rpc_url:
+        sep = "&" if "?" in rpc_url else "?"
+        rpc_url = f"{rpc_url.rstrip('/')}/{sep}api-key={api_key}"
+    limit = max(1, min(limit, HELIUS_TX_LIMIT_MAX))
+    options: dict[str, Any] = {
+        "transactionDetails": transaction_details,
+        "sortOrder": sort_order,
+        "limit": limit,
+        "filters": {
+            "blockTime": {"gte": start_ts, "lte": end_ts},
+            "status": status,
+            "tokenAccounts": token_accounts,
+        },
+    }
+    if pagination_token:
+        options["paginationToken"] = pagination_token
+    body = {"jsonrpc": "2.0", "id": "1", "method": "getTransactionsForAddress", "params": [wallet, options]}
+    async with httpx.AsyncClient(timeout=30.0, http2=True) as client:
+        payload = await _perform_rpc_request(client, rpc_url, body)
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, dict):
+        return {"data": [], "paginationToken": None}
+    data = result.get("data")
+    if not isinstance(data, list):
+        data = []
+    return {"data": data, "paginationToken": result.get("paginationToken"), "request_body": body}

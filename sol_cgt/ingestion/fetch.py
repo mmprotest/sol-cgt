@@ -55,7 +55,7 @@ async def fetch_wallet(
     append: bool = False,
 ) -> list[dict]:
     all_txs: list[dict] = []
-    cursor = before_signature
+    cursor = None
     path = _wallet_cache_path(wallet)
     logger.info(
         "Fetching wallet=%s limit=%s max_pages=%s before=%s after=%s append=%s",
@@ -70,17 +70,22 @@ async def fetch_wallet(
     min_ts: Optional[int] = None
     max_ts: Optional[int] = None
     for page_idx in range(max_pages):
-        page = await helius.fetch_txs(
+        if gte_time is None or lte_time is None:
+            raise RuntimeError("fetch_wallet requires gte_time and lte_time for getTransactionsForAddress")
+        response = await helius.fetch_wallet_transactions_for_period_v2(
             wallet,
-            before_signature=cursor,
-            after_signature=after_signature,
-            sort_order="desc",
-            gte_time=gte_time,
-            lte_time=lte_time,
+            gte_time,
+            lte_time,
+            token_accounts="balanceChanged",
+            status="succeeded",
+            transaction_details="full",
+            sort_order="asc",
             limit=limit,
             api_key=api_key,
-            base_url=base_url,
+            rpc_url=base_url,
+            pagination_token=cursor,
         )
+        page = response.get("data", [])
         if not page:
             logger.info("No more transactions for wallet=%s after page=%s", wallet, page_idx + 1)
             break
@@ -91,35 +96,50 @@ async def fetch_wallet(
             if isinstance(ts, int):
                 min_ts = ts if min_ts is None else min(min_ts, ts)
                 max_ts = ts if max_ts is None else max(max_ts, ts)
-        mode = "a" if append or page_idx > 0 else "w"
-        utils.write_jsonl(path, page, mode=mode)
-        last_entry = page[-1]
-        cursor = last_entry.get("signature") or last_entry.get("id")
+        cursor = response.get("paginationToken")
+        page_ts = [row.get("blockTime") for row in page if isinstance(row.get("blockTime"), int)]
         logger.info(
-            "Fetched wallet=%s page=%s items=%s total=%s cursor=%s",
+            "Fetched wallet=%s page=%s items=%s total=%s pagination_token_present=%s earliest_blockTime=%s latest_blockTime=%s",
             wallet,
             page_idx + 1,
             len(page),
             len(all_txs),
-            cursor,
+            bool(cursor),
+            min(page_ts) if page_ts else None,
+            max(page_ts) if page_ts else None,
         )
-        # Keep paginating until provider returns an empty page.
         if not cursor:
             break
     else:
         logger.warning("Fetch pagination stopped after max_pages=%s wallet=%s", max_pages, wallet)
-    unique_signatures = len({str(tx.get("signature") or tx.get("id")) for tx in all_txs if tx.get("signature") or tx.get("id")})
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for tx in all_txs:
+        sig = tx.get("signature") or tx.get("id")
+        if not sig:
+            deduped.append(tx)
+            continue
+        if str(sig) in seen:
+            continue
+        seen.add(str(sig))
+        deduped.append(tx)
+    mode = "a" if append else "w"
+    utils.write_jsonl(path, deduped, mode=mode)
+    unique_signatures = len(seen)
+    duplicate_signatures = max(0, rows_returned - unique_signatures)
+    all_block_times = [row.get("blockTime") for row in deduped if isinstance(row.get("blockTime"), int)]
     logger.info(
-        "Completed fetch wallet=%s pages=%s rows=%s unique_signatures=%s earliest_ts=%s latest_ts=%s cache_path=%s",
+        "Completed fetch wallet=%s pages=%s rows=%s unique_signatures=%s duplicate_signatures=%s earliest_blockTime=%s latest_blockTime=%s cache_path=%s",
         wallet,
         page_idx + 1 if all_txs else 0,
         rows_returned,
         unique_signatures,
-        min_ts,
-        max_ts,
+        duplicate_signatures,
+        min(all_block_times) if all_block_times else None,
+        max(all_block_times) if all_block_times else None,
         path,
     )
-    return all_txs
+    return deduped
 
 
 async def fetch_many(

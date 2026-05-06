@@ -96,7 +96,8 @@ class AccountingEngine:
             "valued_transfer_group_events_routed_to_external_move": 0,
         }
 
-        for event in sorted(events, key=lambda ev: (ev.ts, ev.id)):
+        events_list = list(events)
+        for event in sorted(events_list, key=lambda ev: (ev.ts, ev.id)):
             if event.raw.get("is_internal_transfer_duplicate"):
                 continue
             if event.kind == "transfer_internal":
@@ -229,16 +230,43 @@ class AccountingEngine:
             quote_token = event.quote_token
             fee_aud = self._fee_to_aud(event, warnings, missing_price_warned)
             event.raw["fee_aud"] = str(fee_aud)
-            if event.raw.get("accounting_action") == "taxable_token_to_token_swap" and event.base_token is not None and event.quote_token is not None:
+            if (
+                event.kind == "swap"
+                and event.raw.get("valuation_method") == "token_to_token_cost_basis_carry"
+                and event.base_token is not None
+                and event.quote_token is not None
+            ):
                 try:
                     swap_disposals, swap_acquisition = self._handle_token_to_token_swap(event, event.base_token, event.quote_token, fee_aud)
                     disposals.extend(swap_disposals)
                     acquisitions.append(swap_acquisition)
                     event.raw["token_to_token_cost_basis_carried_aud"] = str(sum((d.cost_base_aud for d in swap_disposals), Decimal("0")))
+                    signature = event.raw.get("signature")
+                    if signature:
+                        for candidate in events_list:
+                            if (
+                                candidate.wallet == event.wallet
+                                and candidate.raw.get("signature") == signature
+                                and candidate.kind in {"transfer_in", "transfer_out"}
+                            ):
+                                candidate.raw["swap_component"] = True
+                                candidate.raw["accounting_action"] = "component_of_token_to_token_swap"
                     continue
                 except methods.LotSelectionError:
                     event.raw["accounting_action"] = "manual_review"
                     event.raw["manual_review_reason"] = "token_to_token_missing_outgoing_lots"
+                    warnings.append(
+                        WarningRecord(
+                            ts=event.ts,
+                            wallet=event.wallet,
+                            signature=event.raw.get("signature"),
+                            code="missing_lot_history",
+                            message=(
+                                "Missing lot history for token-to-token canonical event; "
+                                f"event_id={event.id}."
+                            ),
+                        )
+                    )
                     continue
 
             proceeds_aud: Optional[Decimal] = None

@@ -400,8 +400,20 @@ def _infer_missing_transfer_values_from_same_signature_anchors(events_list: list
         if not unpriced:
             continue
 
-        chosen_out = anchors_out_preferred if anchors_out_preferred else anchors_out_native
-        chosen_in = anchors_in_preferred if anchors_in_preferred else anchors_in_native
+        non_anchor_out = 0
+        non_anchor_in = 0
+        for event in group:
+            token = event.base_token if event.kind == "transfer_out" else event.quote_token if event.kind == "transfer_in" else None
+            if token is None:
+                continue
+            if normalize_mint(token.mint) not in normalized_anchor_mints:
+                if event.kind == "transfer_out":
+                    non_anchor_out += 1
+                elif event.kind == "transfer_in":
+                    non_anchor_in += 1
+        prefer_token_to_token = non_anchor_out == 1 and non_anchor_in == 1
+        chosen_out = anchors_out_preferred if anchors_out_preferred else ([] if prefer_token_to_token else anchors_out_native)
+        chosen_in = anchors_in_preferred if anchors_in_preferred else ([] if prefer_token_to_token else anchors_in_native)
         out_total = sum((value for _, value in chosen_out), Decimal("0"))
         in_total = sum((value for _, value in chosen_in), Decimal("0"))
 

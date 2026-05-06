@@ -717,7 +717,9 @@ def compute(
         eligibility.manual_review.extend({"event_id": e.id, "reason": "zero_cost_lot_blocked", "timestamp": e.ts.isoformat(), "wallet": e.wallet} for e in scoped_events if e.id in blocked_ids)
     missing_lot_warnings = [w for w in warnings if w.code == "missing_lot_history"]
     valuation_warning_rows = [w.model_dump() for w in warnings if "price" in w.code]
+    raw_signatures = {str((item.get("signature") or item.get("id"))) for addr in wallets for item in fetch_mod.load_cached(addr) if (item.get("signature") or item.get("id"))}
     transaction_summary = summaries.build_transaction_summary(scoped_events)
+    reconciliation_summary = summaries.build_reconciliation_summary(raw_signatures, transaction_summary, scoped_events)
     excluded_events = [*eligibility.manual_review, *eligibility.dust_ignored]
     summary_by_token = summaries.summarize_by_token(disposals)
     summary_overall = summaries.summarize_overall(disposals)
@@ -804,6 +806,7 @@ def compute(
             taxable_disposals=[d.model_dump() for d in disposals],
             normalized_events_debug=[ev.model_dump() for ev in scoped_events],
             dust_ignored=eligibility.dust_ignored,
+            reconciliation=reconciliation_summary,
         )
     console_report.render_summary(disposals, acquisitions, warnings)
     typer.echo("Manual review items were excluded from taxable CGT totals.")
@@ -814,6 +817,28 @@ def compute(
             len(missing_lot_issues),
         )
         raise typer.Exit(code=1)
+
+
+@app.command()
+def reconcile(
+    wallet: List[str] = typer.Option(None, "--wallet", "-w", help="Wallet address", show_default=False),
+    config: Optional[Path] = typer.Option(None, "--config", help="Config YAML"),
+    fy: Optional[str] = typer.Option(None, "--fy", help="Australian financial year (e.g. 2024-2025)"),
+    fetch: bool = typer.Option(True, "--fetch/--no-fetch", help="Fetch missing raw transactions"),
+) -> None:
+    _configure_logging()
+    settings = load_settings(config)
+    wallets = _collect_wallets(wallet) or settings.wallets
+    _, fy_period = _resolve_fy_period(fy, None, None)
+    gte_time = int(fy_period.start.timestamp()) if fy_period else None
+    lte_time = int(fy_period.end.timestamp()) if fy_period else None
+    _ensure_cache_coverage(wallets, gte_time=gte_time, lte_time=lte_time, fetch=fetch, settings=settings, refresh_raw_cache=True)
+    events, _ = _load_and_normalize(wallets, settings=settings, gte_time=gte_time, lte_time=lte_time, fetch=fetch, prefetch_mints=True, rpc_url=None, force_fetch=False)
+    transfers.classify_internal_transfers(events, wallets)
+    transaction_summary = summaries.build_transaction_summary(events)
+    raw_signatures = {str((item.get("signature") or item.get("id"))) for addr in wallets for item in fetch_mod.load_cached(addr) if (item.get("signature") or item.get("id"))}
+    rec = summaries.build_reconciliation_summary(raw_signatures, transaction_summary, events)
+    typer.echo(json.dumps(rec[0], indent=2))
 
 
 @app.command()

@@ -219,6 +219,7 @@ def export_xlsx(
     taxable_disposals: Sequence[dict[str, object]] = (),
     normalized_events_debug: Sequence[dict[str, object]] = (),
     dust_ignored: Sequence[dict[str, object]] = (),
+    reconciliation: Sequence[dict[str, object]] = (),
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
@@ -369,5 +370,6 @@ def export_xlsx(
     _write_rows("taxable_acquisitions", taxable_acquisitions)
     _write_rows("taxable_disposals", taxable_disposals)
     _write_rows("normalized_events_debug", normalized_events_debug)
+    _write_rows("reconciliation", reconciliation)
 
     workbook.save(path)

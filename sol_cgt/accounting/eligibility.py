@@ -47,16 +47,6 @@ def apply_accounting_policy(
 
 
 def _classify_event(event: NormalizedEvent) -> None:
-    if (
-        event.raw.get("source") == "helius_token_transfer"
-        and event.raw.get("valuation_method") == "inferred_from_same_signature_anchor"
-        and event.raw.get("valuation_confidence") == "medium"
-        and event.kind == "transfer_out"
-    ):
-        event.raw["classification"] = "inferred_transfer_manual_review"
-        event.raw["accounting_action"] = "manual_review"
-        event.raw.setdefault("manual_review_reason", "inferred_same_signature_anchor_medium_confidence")
-        return
     if event.raw.get("is_internal_transfer") or event.kind == "transfer_internal":
         event.raw["classification"] = "internal_transfer"
         event.raw["accounting_action"] = "internal_transfer"

@@ -11,7 +11,6 @@ external_lot_tracking: true
 apply_cgt_discount: false
 api_keys:
   helius: YOUR_KEY
-  birdeye: YOUR_KEY
   jupiter: YOUR_KEY
   coingecko: YOUR_KEY
 helius_enhanced_base_url: https://api-mainnet.helius-rpc.com

@@ -14,7 +14,6 @@ class APIKeys(BaseModel):
     """Container for optional API keys."""
 
     helius: Optional[str] = None
-    birdeye: Optional[str] = None
     jupiter: Optional[str] = None
     coingecko: Optional[str] = None
 

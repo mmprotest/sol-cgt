@@ -54,7 +54,7 @@ not tax advice.
   unpriced and a warning is emitted.
 
 ### Pricing defaults
-- Token pricing uses historical-by-unix-time lookups (Birdeye when a key is available) at the
+- Token pricing uses historical-by-unix-time lookups ( when a key is available) at the
   exact transaction timestamp, then converts to AUD using the daily USD→AUD FX rate for that
   local date.
 - If a price cannot be resolved, the event is left unpriced and a warning is emitted.

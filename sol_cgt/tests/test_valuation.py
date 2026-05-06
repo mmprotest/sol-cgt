@@ -7,7 +7,6 @@ from decimal import Decimal
 from sol_cgt.ingestion import normalize
 from sol_cgt.pricing import TimestampPriceProvider
 from sol_cgt.pricing import valuation as valuation_module
-from sol_cgt.providers import birdeye
 from sol_cgt.types import NormalizedEvent, TokenAmount
 
 
@@ -75,13 +74,7 @@ def test_non_swap_missing_price_warns() -> None:
     assert event.raw.get("unpriced") is True
 
 
-def test_provider_401_does_not_crash(monkeypatch, caplog) -> None:
-    async def fail_birdeye(*args, **kwargs):
-        raise birdeye.ProviderUnavailable("unauthorized")
-
-    monkeypatch.setattr(birdeye, "historical_price_usd", fail_birdeye)
+def test_provider_returns_none_for_non_sol_token() -> None:
     provider = TimestampPriceProvider(api_key="key")
     ts = datetime(2024, 8, 1, tzinfo=timezone.utc)
-    with caplog.at_level("WARNING"):
-        assert provider.price_usd("TOKENX", ts) is None
-    assert any("lookup failed" in record.message.lower() for record in caplog.records)
+    assert provider.price_usd("TOKENX", ts) is None

@@ -642,6 +642,10 @@ def compute(
         blocked_ids = {lot.source_event for lot in violations}
         acquisitions = [lot for lot in acquisitions if lot.source_event not in blocked_ids]
         eligibility.manual_review.extend({"event_id": e.id, "reason": "zero_cost_lot_blocked", "timestamp": e.ts.isoformat(), "wallet": e.wallet} for e in scoped_events if e.id in blocked_ids)
+    missing_lot_warnings = [w for w in warnings if w.code == "missing_lot_history"]
+    valuation_warning_rows = [w.model_dump() for w in warnings if "price" in w.code]
+    transaction_summary = summaries.build_transaction_summary(scoped_events)
+    excluded_events = [*eligibility.manual_review, *eligibility.dust_ignored]
     summary_by_token = summaries.summarize_by_token(disposals)
     summary_overall = summaries.summarize_overall(disposals)
     wallet_summary = summaries.summarize_by_wallet(disposals)
@@ -654,7 +658,22 @@ def compute(
     output_dir = outdir or Path("./reports") / ("combined" if len(wallets) > 1 else wallets[0])
     if fy_label:
         output_dir = output_dir / fy_label
-    formats.export_reports(output_dir, acquisitions, disposals, summary_by_token, summary_overall, fmt=fmt, manual_review=eligibility.manual_review, dust_ignored=eligibility.dust_ignored, internal_transfers=lot_moves)
+    overview_row = {
+        "accounting_complete": not bool(excluded_events or missing_lot_issues),
+        "taxable_events_processed": len(eligibility.taxable_events),
+        "manual_review_events": len(eligibility.manual_review),
+        "missing_lot_events": len(missing_lot_issues),
+        "excluded_events": len(excluded_events),
+        "missing_price_events": len([w for w in warnings if w.code == "missing_price"]),
+        "dust_ignored_events": len(eligibility.dust_ignored),
+    }
+    formats.export_reports(
+        output_dir, acquisitions, disposals, summary_by_token, summary_overall, fmt=fmt,
+        manual_review=eligibility.manual_review, dust_ignored=eligibility.dust_ignored,
+        internal_transfers=lot_moves, transaction_summary=transaction_summary,
+        excluded_events=excluded_events, valuation_warnings=valuation_warning_rows,
+        missing_lot_warnings=[w.model_dump() for w in missing_lot_warnings], overview=[overview_row]
+    )
     if xlsx_path:
         for event in scoped_events:
             if event.fee_sol and "fee_aud" not in event.raw:
@@ -697,7 +716,7 @@ def compute(
     console_report.render_summary(disposals, acquisitions, warnings)
     typer.echo("Manual review items were excluded from taxable CGT totals.")
     typer.echo(f"Excluded: internal_transfers={len(lot_moves)} dust_ignored={len(eligibility.dust_ignored)} manual_review={len(eligibility.manual_review)}")
-    if stopped_for_missing:
+    if stopped_for_missing and settings.strict_lots:
         logger.error(
             "Missing lots detected (count=%s). Results may be incomplete until resolved.",
             len(missing_lot_issues),

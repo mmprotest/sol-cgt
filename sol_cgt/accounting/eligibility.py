@@ -67,6 +67,8 @@ def _classify_event(event: NormalizedEvent) -> None:
 
 
 def _policy_reason(event: NormalizedEvent, sol_dust_threshold: Decimal, aud_dust_threshold: Decimal, include_dust: bool) -> str | None:
+    if event.raw.get("manual_review_reason"):
+        return str(event.raw["manual_review_reason"])
     if event.raw.get("accounting_action") in {"internal_transfer", "manual_review"}:
         return None if event.raw.get("accounting_action") == "internal_transfer" else "ambiguous"
     if event.raw.get("unpriced") or event.raw.get("valuation_method") in {"missing_token_price_no_counterparty_leg", "ambiguous_multi_token_swap"}:
@@ -80,7 +82,7 @@ def _policy_reason(event: NormalizedEvent, sol_dust_threshold: Decimal, aud_dust
         return "swap_missing_consideration_value"
 
     token = event.base_token or event.quote_token
-    if token and token.mint.upper() == "SOL" and token.amount < sol_dust_threshold and not include_dust:
+    if token and token.mint.upper() == "SOL" and token.amount < sol_dust_threshold and not include_dust and event.kind != "fee":
         return "native_sol_dust"
     hint = event.raw.get("proceeds_hint_aud") or event.raw.get("cost_hint_aud")
     if hint is not None and Decimal(str(hint)).copy_abs() < aud_dust_threshold and not include_dust:

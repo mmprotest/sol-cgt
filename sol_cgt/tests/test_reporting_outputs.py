@@ -152,3 +152,13 @@ def test_parquet_requires_extra(monkeypatch, tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="Parquet support requires the 'parquet' extra"):
         formats.write_parquet(tmp_path / "summary.parquet", [], columns=SUMMARY_OVERALL_COLUMNS)
+
+
+def test_transaction_summary_groups_by_signature() -> None:
+    ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    ev1 = NormalizedEvent(id="sigx#0", ts=ts, kind="swap", wallet="W1", raw={"signature": "sigx"})
+    ev2 = NormalizedEvent(id="sigx#1", ts=ts, kind="transfer_out", wallet="W1", raw={"signature": "sigx"})
+    rows = summaries.build_transaction_summary([ev1, ev2])
+    assert len(rows) == 1
+    assert rows[0]["signature"] == "sigx"
+    assert rows[0]["classification"] == "trade"

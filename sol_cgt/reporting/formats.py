@@ -75,6 +75,11 @@ def export_reports(
     manual_review: Sequence[Row] = (),
     dust_ignored: Sequence[Row] = (),
     internal_transfers: Sequence[Row] = (),
+    transaction_summary: Sequence[Row] = (),
+    excluded_events: Sequence[Row] = (),
+    valuation_warnings: Sequence[Row] = (),
+    missing_lot_warnings: Sequence[Row] = (),
+    overview: Sequence[Row] = (),
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     if fmt in ("csv", "both"):
@@ -93,6 +98,21 @@ def export_reports(
         if internal_transfers:
             transfer_cols = list(_normalize_rows(internal_transfers)[0].keys())
             write_csv(outdir / "internal_transfers.csv", internal_transfers, columns=transfer_cols)
+        if transaction_summary:
+            cols = list(_normalize_rows(transaction_summary)[0].keys())
+            write_csv(outdir / "transaction_summary.csv", transaction_summary, columns=cols)
+        if excluded_events:
+            cols = list(_normalize_rows(excluded_events)[0].keys())
+            write_csv(outdir / "excluded_events.csv", excluded_events, columns=cols)
+        if valuation_warnings:
+            cols = list(_normalize_rows(valuation_warnings)[0].keys())
+            write_csv(outdir / "valuation_warnings.csv", valuation_warnings, columns=cols)
+        if missing_lot_warnings:
+            cols = list(_normalize_rows(missing_lot_warnings)[0].keys())
+            write_csv(outdir / "missing_lot_warnings.csv", missing_lot_warnings, columns=cols)
+        if overview:
+            cols = list(_normalize_rows(overview)[0].keys())
+            write_csv(outdir / "overview.csv", overview, columns=cols)
     if fmt in ("parquet", "both"):
         write_parquet(outdir / "acquisitions.parquet", acquisitions, columns=ACQUISITION_COLUMNS)
         write_parquet(outdir / "disposals.parquet", disposals, columns=DISPOSAL_COLUMNS)

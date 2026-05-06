@@ -69,7 +69,7 @@ class AppSettings(BaseSettings):
     external_lot_tracking: bool = True
     apply_cgt_discount: bool = False
     strict_lots: bool = True
-    auto_backfill: bool = True
+    auto_backfill: bool = False
     backfill_step_days: int = Field(default=30, ge=1)
     max_backfill_days: int = Field(default=3650, ge=1)
     api_keys: APIKeys = Field(default_factory=APIKeys)

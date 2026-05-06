@@ -134,3 +134,26 @@ def test_ambiguous_multi_token_swap_warns() -> None:
     assert warnings
     assert warnings[0].code == "ambiguous_multi_token_swap"
     assert event.raw["valuation_method"] == "ambiguous_multi_token_swap"
+
+
+def test_inferred_transfer_swap_with_anchor_hint_avoids_missing_price_warning() -> None:
+    ts = datetime(2024, 7, 2, tzinfo=timezone.utc)
+    event = NormalizedEvent(
+        id="sig3#1",
+        ts=ts,
+        kind="swap",
+        quote_token=TokenAmount(mint="TOKENQ", symbol="TKQ", decimals=6, amount_raw=1_000_000),
+        fee_sol=Decimal("0"),
+        wallet="WALLET",
+        raw={
+            "signature": "sig3",
+            "source": "inferred_transfer_swap",
+            "cost_hint_aud": "12.34",
+        },
+    )
+    ctx = valuation_module.ValuationContext(
+        usd_provider=TimestampPriceProvider(api_key=None),
+        fx_rate=lambda _: Decimal("1.0"),
+    )
+    warnings = valuation_module.valuate_events([event], ctx)
+    assert not any(w.code == "missing_token_price_no_counterparty_leg" for w in warnings)

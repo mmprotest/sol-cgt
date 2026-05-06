@@ -67,6 +67,8 @@ def _classify_event(event: NormalizedEvent) -> None:
 
 
 def _policy_reason(event: NormalizedEvent, sol_dust_threshold: Decimal, aud_dust_threshold: Decimal, include_dust: bool) -> str | None:
+    if event.raw.get("swap_component"):
+        return "swap_component"
     if event.raw.get("manual_review_reason"):
         return str(event.raw["manual_review_reason"])
     if event.raw.get("accounting_action") in {"internal_transfer", "manual_review"}:

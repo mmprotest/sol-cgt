@@ -124,10 +124,6 @@ def build_transaction_summary(events: Iterable[NormalizedEvent]) -> list[dict[st
         kinds = {e.kind for e in sig_events}
         has_trade = "swap" in kinds or any("swap" in str(e.raw.get("classification", "")) for e in sig_events)
         if has_trade:
-            for event in sig_events:
-                if event.kind in {"transfer_in", "transfer_out", "transfer_internal"}:
-                    event.raw["swap_component"] = True
-        if has_trade:
             classification = "trade"
         elif any(e.raw.get("accounting_action") == "manual_review" or e.raw.get("manual_review_reason") for e in sig_events):
             classification = "mixed_or_ambiguous"

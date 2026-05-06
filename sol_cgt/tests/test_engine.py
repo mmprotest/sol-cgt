@@ -186,22 +186,38 @@ def _ev(event_id: str, kind: str, ts: datetime, wallet: str, *, base=None, quote
     return NormalizedEvent(id=event_id, ts=ts, kind=kind, wallet=wallet, base_token=base, quote_token=quote, counterparty=counterparty, fee_sol=Decimal("0"), raw=payload, tags=set())
 
 
-def test_valued_transfer_out_routes_to_taxable_disposal_not_external_move() -> None:
+def test_medium_confidence_inferred_transfer_out_is_not_forced_taxable_disposal() -> None:
     ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
     buy = _ev("b#0", "buy", ts, "W1", quote=_token("ABC", 10, symbol="ABC"), raw={"cost_aud": "100"})
-    sell = _ev("s#0", "transfer_out", ts.replace(hour=1), "W1", base=_token("ABC", 4, symbol="ABC"), counterparty="EXT", raw={"accounting_action": "taxable_disposal", "proceeds_hint_aud": "80", "valuation_method": "inferred_from_same_signature_anchor", "source": "helius_token_transfer"})
+    sell = _ev("s#0", "transfer_out", ts.replace(hour=1), "W1", base=_token("ABC", 4, symbol="ABC"), counterparty="EXT", raw={"accounting_action": "taxable_disposal", "proceeds_hint_aud": "80", "valuation_method": "inferred_from_same_signature_anchor", "valuation_confidence": "medium", "source": "helius_token_transfer"})
+    result = AccountingEngine(price_provider=SimplePriceProvider({})).process([buy, sell], wallets=["W1"])
+    assert len(result.disposals) == 0
+    assert len(result.lot_moves) == 0
+
+
+def test_medium_confidence_inferred_transfer_in_is_not_forced_taxable_acquisition() -> None:
+    ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    event = _ev("a#0", "transfer_in", ts, "W1", quote=_token("ABC", 5, symbol="ABC"), counterparty="EXT", raw={"accounting_action": "taxable_acquisition", "cost_hint_aud": "55", "valuation_method": "inferred_from_same_signature_anchor", "valuation_confidence": "medium", "source": "helius_token_transfer"})
+    result = AccountingEngine(price_provider=SimplePriceProvider({})).process([event], wallets=["W1"], external_lot_tracking=True)
+    assert len(result.acquisitions) == 0
+    assert len(result.lot_moves) == 0
+
+
+def test_high_confidence_inferred_transfer_out_is_still_forced_taxable_disposal() -> None:
+    ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    buy = _ev("b#0", "buy", ts, "W1", quote=_token("ABC", 10, symbol="ABC"), raw={"cost_aud": "100"})
+    sell = _ev("s#0", "transfer_out", ts.replace(hour=1), "W1", base=_token("ABC", 4, symbol="ABC"), counterparty="EXT", raw={"accounting_action": "taxable_disposal", "proceeds_hint_aud": "80", "valuation_method": "inferred_from_same_signature_anchor", "valuation_confidence": "high", "source": "helius_token_transfer"})
     result = AccountingEngine(price_provider=SimplePriceProvider({})).process([buy, sell], wallets=["W1"])
     assert len(result.disposals) == 1
-    assert len(result.lot_moves) == 0
 
 
-def test_valued_transfer_in_routes_to_taxable_acquisition_with_hint_cost() -> None:
+def test_swap_event_remains_taxable() -> None:
     ts = datetime(2024, 3, 1, tzinfo=timezone.utc)
-    event = _ev("a#0", "transfer_in", ts, "W1", quote=_token("ABC", 5, symbol="ABC"), counterparty="EXT", raw={"accounting_action": "taxable_acquisition", "cost_hint_aud": "55", "valuation_method": "inferred_from_same_signature_anchor", "source": "helius_token_transfer"})
-    result = AccountingEngine(price_provider=SimplePriceProvider({})).process([event], wallets=["W1"], external_lot_tracking=True)
-    assert len(result.acquisitions) == 1
-    assert result.acquisitions[0].unit_cost_aud == Decimal("11.000000000000")
-    assert len(result.lot_moves) == 0
+    buy = _ev("b#0", "buy", ts, "W1", quote=_token("ABC", 10, symbol="ABC"), raw={"cost_aud": "100"})
+    swap = _ev("sw#0", "swap", ts.replace(hour=1), "W1", base=_token("ABC", 4, symbol="ABC"), quote=_token("XYZ", 8, symbol="XYZ"), raw={"proceeds_hint_aud": "80", "cost_hint_aud": "80", "valuation_method": "canonical_swap"})
+    result = AccountingEngine(price_provider=SimplePriceProvider({})).process([buy, swap], wallets=["W1"])
+    assert len(result.disposals) == 1
+    assert len(result.acquisitions) == 2
 
 
 def test_swap_component_transfer_row_remains_excluded_from_taxable() -> None:

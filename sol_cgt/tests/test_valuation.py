@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sol_cgt.accounting.eligibility import apply_accounting_policy
 from sol_cgt.ingestion import normalize
 from sol_cgt.pricing import TimestampPriceProvider
 from sol_cgt.pricing import valuation as valuation_module
@@ -136,24 +137,61 @@ def test_ambiguous_multi_token_swap_warns() -> None:
     assert event.raw["valuation_method"] == "ambiguous_multi_token_swap"
 
 
-def test_inferred_transfer_swap_with_anchor_hint_avoids_missing_price_warning() -> None:
+def test_transfer_in_infers_cost_hint_from_wsol_anchor() -> None:
     ts = datetime(2024, 7, 2, tzinfo=timezone.utc)
-    event = NormalizedEvent(
+    target = NormalizedEvent(
         id="sig3#1",
         ts=ts,
-        kind="swap",
+        kind="transfer_in",
         quote_token=TokenAmount(mint="TOKENQ", symbol="TKQ", decimals=6, amount_raw=1_000_000),
         fee_sol=Decimal("0"),
         wallet="WALLET",
-        raw={
-            "signature": "sig3",
-            "source": "inferred_transfer_swap",
-            "cost_hint_aud": "12.34",
-        },
+        raw={"signature": "sig3"},
+    )
+    anchor = NormalizedEvent(
+        id="sig3#2",
+        ts=ts,
+        kind="transfer_out",
+        base_token=TokenAmount(mint="So11111111111111111111111111111111111111112", symbol="WSOL", decimals=9, amount_raw=100_000_000),
+        fee_sol=Decimal("0"),
+        wallet="WALLET",
+        raw={"signature": "sig3", "proceeds_hint_aud": "12.34"},
     )
     ctx = valuation_module.ValuationContext(
         usd_provider=TimestampPriceProvider(api_key=None),
         fx_rate=lambda _: Decimal("1.0"),
     )
-    warnings = valuation_module.valuate_events([event], ctx)
-    assert not any(w.code == "missing_token_price_no_counterparty_leg" for w in warnings)
+    warnings = valuation_module.valuate_events([target, anchor], ctx)
+    assert target.raw["cost_hint_aud"] == "12.34"
+    assert target.raw["valuation_method"] == "inferred_from_same_signature_anchor"
+    result = apply_accounting_policy([target, anchor], sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
+    assert any(e.id == target.id for e in result.taxable_events)
+    assert not any(w.event_id == target.id and w.code == "missing_token_price_no_counterparty_leg" for w in warnings)
+
+
+def test_transfer_out_infers_proceeds_hint_from_wsol_anchor() -> None:
+    ts = datetime(2024, 7, 2, tzinfo=timezone.utc)
+    target = NormalizedEvent(
+        id="sig4#1",
+        ts=ts,
+        kind="transfer_out",
+        base_token=TokenAmount(mint="TOKENQ", symbol="TKQ", decimals=6, amount_raw=1_000_000),
+        fee_sol=Decimal("0"),
+        wallet="WALLET",
+        raw={"signature": "sig4"},
+    )
+    anchor = NormalizedEvent(
+        id="sig4#2",
+        ts=ts,
+        kind="transfer_in",
+        quote_token=TokenAmount(mint="So11111111111111111111111111111111111111112", symbol="WSOL", decimals=9, amount_raw=100_000_000),
+        fee_sol=Decimal("0"),
+        wallet="WALLET",
+        raw={"signature": "sig4", "cost_hint_aud": "21"},
+    )
+    ctx = valuation_module.ValuationContext(usd_provider=TimestampPriceProvider(api_key=None), fx_rate=lambda _: Decimal("1.0"))
+    valuation_module.valuate_events([target, anchor], ctx)
+    assert target.raw["proceeds_hint_aud"] == "21"
+    assert target.raw["valuation_method"] == "inferred_from_same_signature_anchor"
+    result = apply_accounting_policy([target, anchor], sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
+    assert any(e.id == target.id for e in result.taxable_events)

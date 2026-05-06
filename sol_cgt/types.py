@@ -63,6 +63,7 @@ NormalizedEventKind = Literal[
     "buy",
     "transfer_in",
     "transfer_out",
+    "transfer_internal",
     "airdrop",
     "mint",
     "burn",

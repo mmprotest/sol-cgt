@@ -92,6 +92,10 @@ class AccountingEngine:
         missing_price_warned: set[tuple[str, str, str]] = set()
 
         for event in sorted(events, key=lambda ev: (ev.ts, ev.id)):
+            if event.raw.get("is_internal_transfer_duplicate"):
+                continue
+            if event.kind == "transfer_internal":
+                continue
             if event.id in matched_in_ids:
                 continue
             if event.id in match_by_out:

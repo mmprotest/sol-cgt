@@ -192,8 +192,14 @@ def _run_accounting(
 
 def _collect_wallets(wallet_values: Optional[List[str]]) -> List[str]:
     wallets: List[str] = []
+    seen: set[str] = set()
     for entry in wallet_values or []:
-        wallets.extend([w.strip() for w in entry.split(",") if w.strip()])
+        for wallet in [w.strip() for w in entry.split(",") if w.strip()]:
+            normalized = transfers.normalize_wallet_address(wallet)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            wallets.append(normalized)
     return wallets
 
 
@@ -453,6 +459,8 @@ def compute(
         force_fetch=False,
     )
     _apply_kind_breakdown(kind_counts)
+    transfer_stats = transfers.classify_internal_transfers(events, wallets)
+    logger.info("Internal transfer classification complete owned_wallets=%s internal_transfers=%s external_transfer_in=%s external_transfer_out=%s", transfer_stats["owned_wallets"], transfer_stats["internal_transfers"], transfer_stats["external_transfer_in"], transfer_stats["external_transfer_out"])
     scoped_events = _events_required_for_fy(events, fy_period)
     if fy_period is not None:
         fy_end = utils.to_au_local(fy_period.end).date().isoformat()
@@ -525,6 +533,8 @@ def compute(
                 force_fetch=True,
             )
             _apply_kind_breakdown(kind_counts)
+            transfer_stats = transfers.classify_internal_transfers(events, wallets)
+            logger.info("Internal transfer classification complete owned_wallets=%s internal_transfers=%s external_transfer_in=%s external_transfer_out=%s", transfer_stats["owned_wallets"], transfer_stats["internal_transfers"], transfer_stats["external_transfer_in"], transfer_stats["external_transfer_out"])
             scoped_events = _events_required_for_fy(events, fy_period)
             if fy_period is not None:
                 fy_end = utils.to_au_local(fy_period.end).date().isoformat()

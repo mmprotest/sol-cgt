@@ -68,7 +68,7 @@ class AppSettings(BaseSettings):
     treat_liquidity_as_disposal: bool = False
     external_lot_tracking: bool = True
     apply_cgt_discount: bool = False
-    strict_lots: bool = True
+    strict_lots: bool = False
     auto_backfill: bool = False
     backfill_step_days: int = Field(default=30, ge=1)
     max_backfill_days: int = Field(default=3650, ge=1)

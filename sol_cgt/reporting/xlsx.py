@@ -210,6 +210,15 @@ def export_xlsx(
     warnings: Sequence[WarningRecord],
     missing_lots: Sequence[MissingLotIssue],
     price_provider: AudPriceProvider,
+    transaction_summary: Sequence[dict[str, object]] = (),
+    manual_review: Sequence[dict[str, object]] = (),
+    excluded_events: Sequence[dict[str, object]] = (),
+    valuation_warnings: Sequence[dict[str, object]] = (),
+    missing_lot_warnings: Sequence[dict[str, object]] = (),
+    taxable_acquisitions: Sequence[dict[str, object]] = (),
+    taxable_disposals: Sequence[dict[str, object]] = (),
+    normalized_events_debug: Sequence[dict[str, object]] = (),
+    dust_ignored: Sequence[dict[str, object]] = (),
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
@@ -339,5 +348,26 @@ def export_xlsx(
         missing_sheet.auto_filter.ref = missing_sheet.dimensions
         missing_sheet.freeze_panes = "A3"
         _auto_width(missing_sheet)
+
+    def _write_rows(name: str, rows: Sequence[dict[str, object]]) -> None:
+        sheet = workbook.create_sheet(name)
+        if not rows:
+            return
+        headers = list(rows[0].keys())
+        sheet.append(headers)
+        for row in rows:
+            sheet.append([row.get(h) for h in headers])
+        _apply_header_style(sheet)
+        _auto_width(sheet)
+
+    _write_rows("transaction_summary", transaction_summary)
+    _write_rows("manual_review", manual_review)
+    _write_rows("excluded_events", excluded_events)
+    _write_rows("dust_ignored", dust_ignored)
+    _write_rows("valuation_warnings", valuation_warnings)
+    _write_rows("missing_lot_warnings", missing_lot_warnings)
+    _write_rows("taxable_acquisitions", taxable_acquisitions)
+    _write_rows("taxable_disposals", taxable_disposals)
+    _write_rows("normalized_events_debug", normalized_events_debug)
 
     workbook.save(path)

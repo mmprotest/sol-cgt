@@ -28,7 +28,7 @@ def apply_accounting_policy(
     for event in events:
         _classify_event(event)
         reason = _policy_reason(event, sol_dust_threshold, aud_dust_threshold, include_dust)
-        if reason is None:
+        if reason is None and event.raw.get("accounting_action") in {"taxable_acquisition", "taxable_disposal"} and not event.raw.get("swap_component"):
             taxable.append(event)
             continue
         row = _manual_row(event, reason)

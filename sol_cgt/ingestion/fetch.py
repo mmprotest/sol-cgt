@@ -140,3 +140,15 @@ def cache_has_data(wallet: str) -> bool:
     for _ in utils.read_jsonl(path):
         return True
     return False
+
+
+def cache_time_bounds(wallet: str) -> tuple[Optional[int], Optional[int]]:
+    min_ts: Optional[int] = None
+    max_ts: Optional[int] = None
+    for entry in utils.read_jsonl(_wallet_cache_path(wallet)):
+        ts = entry.get("timestamp")
+        if not isinstance(ts, int):
+            continue
+        min_ts = ts if min_ts is None else min(min_ts, ts)
+        max_ts = ts if max_ts is None else max(max_ts, ts)
+    return min_ts, max_ts

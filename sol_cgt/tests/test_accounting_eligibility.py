@@ -32,15 +32,13 @@ def test_missing_price_goes_manual_review():
     assert res.manual_review[0]["reason"] == "missing_token_price_no_counterparty_leg"
 
 
-def test_unanchored_token_to_token_group_marks_components_non_taxable():
+def test_unanchored_token_to_token_group_does_not_mark_components_without_canonical_event():
     out_ev = _ev("transfer_out", base=_tok("TOKA", 5, decimals=0), raw={"signature": "sig-1", "source": "helius_token_transfer"})
     in_ev = _ev("transfer_in", quote=_tok("TOKB", 10, decimals=0), raw={"signature": "sig-1", "source": "helius_token_transfer"})
     res = apply_accounting_policy([out_ev, in_ev], sol_dust_threshold=Decimal("0.00001"), aud_dust_threshold=Decimal("0.01"), include_dust=False)
     assert len(res.taxable_events) == 0
-    assert out_ev.raw.get("swap_component") is True
-    assert in_ev.raw.get("swap_component") is True
-    assert out_ev.raw.get("accounting_action") == "manual_review"
-    assert in_ev.raw.get("accounting_action") == "manual_review"
+    assert out_ev.raw.get("swap_component") is None
+    assert in_ev.raw.get("swap_component") is None
 
 
 def test_unanchored_ambiguous_group_stays_manual_review():

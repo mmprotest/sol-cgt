@@ -229,6 +229,18 @@ class AccountingEngine:
             quote_token = event.quote_token
             fee_aud = self._fee_to_aud(event, warnings, missing_price_warned)
             event.raw["fee_aud"] = str(fee_aud)
+            if event.raw.get("accounting_action") == "taxable_token_to_token_swap" and event.base_token is not None and event.quote_token is not None:
+                try:
+                    swap_disposals, swap_acquisition = self._handle_token_to_token_swap(event, event.base_token, event.quote_token, fee_aud)
+                    disposals.extend(swap_disposals)
+                    acquisitions.append(swap_acquisition)
+                    event.raw["token_to_token_cost_basis_carried_aud"] = str(sum((d.cost_base_aud for d in swap_disposals), Decimal("0")))
+                    continue
+                except methods.LotSelectionError:
+                    event.raw["accounting_action"] = "manual_review"
+                    event.raw["manual_review_reason"] = "token_to_token_missing_outgoing_lots"
+                    continue
+
             proceeds_aud: Optional[Decimal] = None
             if base_token is not None and base_token.amount > 0:
                 proceeds_aud = self._resolve_proceeds(
@@ -795,6 +807,19 @@ class AccountingEngine:
         return self._handle_disposal(event, base.model_copy(update={"amount": issue.available_qty}), partial_proceeds, partial_fee)
 
 
+
+    def _handle_token_to_token_swap(self, event: NormalizedEvent, base: TokenAmount, quote: TokenAmount, fee_aud: Decimal) -> tuple[List[DisposalRecord], AcquisitionLot]:
+        disposals = self._handle_disposal(event, base, Decimal("0"), fee_aud)
+        carried = sum((d.cost_base_aud for d in disposals), Decimal("0"))
+        total_proceeds = carried + sum((d.fees_aud for d in disposals), Decimal("0"))
+        if base.amount > 0:
+            for d in disposals:
+                portion = d.qty_disposed / base.amount
+                d.proceeds_aud = utils.quantize_aud(total_proceeds * portion)
+                d.gain_loss_aud = utils.quantize_aud(d.proceeds_aud - d.fees_aud - d.cost_base_aud)
+        event.raw["cost_hint_aud"] = str(carried)
+        acquisition = self._handle_acquisition(event, quote, carried, Decimal("0"), [], set())
+        return disposals, acquisition
 def _issue_context(event: NormalizedEvent, token: TokenAmount) -> dict[str, object]:
     return {
         "wallet": event.wallet,

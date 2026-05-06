@@ -19,6 +19,7 @@ import typer.core
 
 from .accounting.engine import AccountingEngine, AccountingResult
 from .accounting.eligibility import apply_accounting_policy
+from .accounting.token_to_token import canonicalize_token_to_token
 from .accounting import methods as accounting_methods
 from .config import load_settings
 from .ingestion import fetch as fetch_mod
@@ -605,6 +606,18 @@ def compute(
             fx_rate=price_provider.fx_rate,
         ),
     )
+    t2t_counters = canonicalize_token_to_token(scoped_events)
+    logger.info("token_to_token_groups_detected=%s", t2t_counters["token_to_token_groups_detected"])
+    logger.info("token_to_token_canonical_events_created=%s", t2t_counters["token_to_token_canonical_events_created"])
+    logger.info("token_to_token_cost_basis_carried_aud=%s", t2t_counters["token_to_token_cost_basis_carried_aud"])
+    logger.info("token_to_token_groups_missing_outgoing_lots=%s", t2t_counters["token_to_token_groups_missing_outgoing_lots"])
+    logger.info("token_to_token_component_rows_excluded=%s", t2t_counters["token_to_token_component_rows_excluded"])
+    t2t_counters = canonicalize_token_to_token(scoped_events)
+    logger.info("token_to_token_groups_detected=%s", t2t_counters["token_to_token_groups_detected"])
+    logger.info("token_to_token_canonical_events_created=%s", t2t_counters["token_to_token_canonical_events_created"])
+    logger.info("token_to_token_cost_basis_carried_aud=%s", t2t_counters["token_to_token_cost_basis_carried_aud"])
+    logger.info("token_to_token_groups_missing_outgoing_lots=%s", t2t_counters["token_to_token_groups_missing_outgoing_lots"])
+    logger.info("token_to_token_component_rows_excluded=%s", t2t_counters["token_to_token_component_rows_excluded"])
     eligibility = apply_accounting_policy(
         scoped_events,
         sol_dust_threshold=sol_dust_threshold_dec,

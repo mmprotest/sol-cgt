@@ -32,26 +32,17 @@ def test_stablecoin_conversion(monkeypatch) -> None:
     assert provider.price_aud(pricing.USDC_MINT, ts) == Decimal("1.50")
 
 
-def test_price_cache_hit(monkeypatch, tmp_path) -> None:
-    calls = {"count": 0}
-
-    async def fake_token_price(*args, **kwargs):
-        calls["count"] += 1
-        return Decimal("10")
-
+def test_non_sol_token_unpriced(monkeypatch, tmp_path) -> None:
     async def fake_fx(day):
         return Decimal("1.0")
 
-    monkeypatch.setattr(pricing.birdeye, "historical_price_usd", fake_token_price)
     monkeypatch.setattr(pricing.fx_rates, "usd_to_aud_rate", fake_fx)
 
     cache = pricing.PriceCache(tmp_path)
     usd_provider = pricing.TimestampPriceProvider(api_key="key", cache=cache)
     provider = pricing.AudPriceProvider(api_key="key", usd_provider=usd_provider)
     ts = datetime(2024, 1, 1, 0, 0, 10, tzinfo=timezone.utc)
-    provider.price_aud("TOKEN", ts)
-    provider.price_aud("TOKEN", ts)
-    assert calls["count"] == 1
+    assert provider.price_aud("TOKEN", ts) is None
 
 
 def test_sol_price_missing_warns(monkeypatch, caplog) -> None:
@@ -66,3 +57,4 @@ def test_sol_price_missing_warns(monkeypatch, caplog) -> None:
     with caplog.at_level("WARNING"):
         assert provider.price_aud("SOL", ts) is None
     assert any("Price not available" in record.message for record in caplog.records)
+

@@ -32,7 +32,7 @@ multi-wallet CGT processing.
 
 ### 5) Pricing + FX
 - **Module:** `sol_cgt/pricing/`
-- **Primary sources:** Birdeye historical-by-unix timestamp pricing (requires API key), frankfurter.app FX.
+- **Primary sources:**  historical-by-unix timestamp pricing (requires API key), frankfurter.app FX.
 - **Fallback:** RBA FX when frankfurter fails; missing token prices are warned and marked unpriced.
 - **Invariant:** token prices are cached by minute bucket and FX by date.
 

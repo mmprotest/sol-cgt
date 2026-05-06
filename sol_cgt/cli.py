@@ -30,7 +30,6 @@ from .reporting import formats, summaries, xlsx
 from .types import MissingLotIssue, NormalizedEvent
 from . import utils
 from .utils import australian_financial_year_bounds, parse_local_date
-from .providers import birdeye as birdeye_provider
 from .providers import jupiter as jupiter_provider
 from .providers import sol_price_table
 
@@ -269,8 +268,6 @@ def _summary_value(rows: list[dict[str, object]], key: str, default: object = 0)
 
 
 def _apply_api_keys_to_env(settings) -> None:
-    if settings.api_keys.birdeye:
-        os.environ.setdefault("BIRDEYE_API_KEY", settings.api_keys.birdeye)
     if settings.api_keys.jupiter:
         os.environ.setdefault("JUP_API_KEY", settings.api_keys.jupiter)
     if settings.api_keys.coingecko:
@@ -384,7 +381,6 @@ def compute(
         "--max-backfill-days",
         help="Maximum days to backfill when auto-backfill is enabled",
     ),
-    use_birdeye: bool = typer.Option(False, "--use-birdeye/--no-use-birdeye", help="Enable optional Birdeye pricing for non-SOL tokens"),
 ) -> None:
     _configure_logging()
     parsed_wallets = _collect_wallets(wallet)
@@ -454,10 +450,8 @@ def compute(
         cache_path = asyncio.run(sol_price_table.ensure_sol_usd_daily_prices(start_day, end_day))
         rows, _, _ = sol_price_table.cache_stats(cache_path)
         logger.info("SOL/USD daily price table ready path=%s start=%s end=%s rows=%s source=kraken", cache_path, start_day.isoformat(), end_day.isoformat(), rows)
-    birdeye_key = settings.api_keys.birdeye if use_birdeye else None
-    usd_provider = TimestampPriceProvider(api_key=birdeye_key)
+    usd_provider = TimestampPriceProvider()
     price_provider = AudPriceProvider(
-        api_key=birdeye_key,
         fx_source=settings.fx_source,
         usd_provider=usd_provider,
     )
@@ -664,7 +658,6 @@ def debug_env() -> None:
     )
     for name, version in versions.items():
         typer.echo(f"{name} version: {version}")
-    typer.echo(f"Birdeye metadata URL: {birdeye_provider.METADATA_URL}")
     typer.echo(f"Jupiter token v1 URL: {jupiter_provider.JUPITER_TOKENS_V1_URL}")
     typer.echo(f"Jupiter token v2 URL: {jupiter_provider.JUPITER_TOKENS_V2_URL}")
     typer.echo(f"Jupiter price base URL: {jupiter_provider._price_base_url(os.getenv('JUP_API_KEY'))}")

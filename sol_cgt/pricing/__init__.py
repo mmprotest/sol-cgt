@@ -3,16 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional
 
 from .. import utils
-from ..providers import birdeye, fx_rates, rba_fx, sol_price_table
+from ..providers import fx_rates, rba_fx, sol_price_table
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -57,8 +56,8 @@ class PriceCache:
 
 class TimestampPriceProvider:
     def __init__(self, *, api_key: Optional[str] = None, cache: Optional[PriceCache] = None) -> None:
-        self.api_key = api_key or os.getenv("BIRDEYE_API_KEY")
-        self.cache = cache or PriceCache(utils.ensure_cache_dir("prices", "birdeye"))
+        _ = api_key
+        self.cache = cache or PriceCache(utils.ensure_cache_dir("prices", "tokens"))
 
     def price_usd(self, mint: str, ts: datetime) -> Optional[Decimal]:
         mint = normalize_mint(mint)
@@ -71,19 +70,7 @@ class TimestampPriceProvider:
         cached = self.cache.get(mint, bucket)
         if cached is not None:
             return cached
-        if not self.api_key:
-            return None
-        try:
-            price = _run_async(
-                birdeye.historical_price_usd(mint, _bucket_datetime(bucket), api_key=self.api_key)
-            )
-        except Exception as exc:
-            LOGGER.warning("Birdeye price lookup failed for mint=%s at %s: %s", mint, ts.isoformat(), exc)
-            return None
-        if price is None:
-            return None
-        self.cache.set(mint, bucket, price)
-        return price
+        return None
 
     def prefetch(self, requests: Iterable[tuple[str, int]]) -> None:
         grouped: dict[str, list[int]] = {}
@@ -96,22 +83,7 @@ class TimestampPriceProvider:
             if self.cache.get(mint, bucket) is not None:
                 continue
             grouped.setdefault(mint, []).append(bucket)
-        if not grouped or not self.api_key:
-            return
-        for mint, buckets in grouped.items():
-            try:
-                prices = _run_async(
-                    birdeye.historical_price_usd_batch(mint, buckets, api_key=self.api_key)
-                )
-            except Exception as exc:
-                LOGGER.warning("Birdeye batch price lookup failed for mint=%s: %s", mint, exc)
-                continue
-            for bucket, price in prices.items():
-                self.cache.set(mint, bucket, price)
-
-
-def _bucket_datetime(bucket: int) -> datetime:
-    return datetime.fromtimestamp(bucket, tz=timezone.utc)
+        return
 
 
 def _unix_minute_bucket(ts: datetime) -> int:
@@ -133,8 +105,9 @@ class AudPriceProvider:
         fx_source: str = "frankfurter",
         usd_provider: Optional[TimestampPriceProvider] = None,
     ) -> None:
+        _ = api_key
         self.fx_source = fx_source
-        self.usd_provider = usd_provider or TimestampPriceProvider(api_key=api_key)
+        self.usd_provider = usd_provider or TimestampPriceProvider()
 
     def price_aud(self, mint: str, ts: datetime, *, context: Optional[dict] = None) -> Optional[Decimal]:
         context = context or {}

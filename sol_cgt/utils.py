@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import dataclasses
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from enum import Enum
 import hashlib
 import json
 from pathlib import Path
@@ -31,9 +33,28 @@ def ensure_cache_dir(*parts: str) -> Path:
 
 
 def json_dumps(data: Any) -> str:
+    def json_default(value: Any) -> Any:
+        if isinstance(value, Decimal):
+            return str(value)
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, (set, tuple)):
+            return list(value)
+        if isinstance(value, bytes):
+            return value.hex()
+        if dataclasses.is_dataclass(value):
+            return dataclasses.asdict(value)
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        return str(value)
+
     if orjson is not None:  # pragma: no cover - executed when orjson available
-        return orjson.dumps(data).decode("utf-8")
-    return json.dumps(data, default=str)
+        return orjson.dumps(data, option=orjson.OPT_NON_STR_KEYS, default=json_default).decode("utf-8")
+    return json.dumps(data, default=json_default)
 
 
 def json_loads(data: str) -> Any:

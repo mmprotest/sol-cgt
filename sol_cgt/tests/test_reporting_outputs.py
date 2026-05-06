@@ -162,3 +162,47 @@ def test_transaction_summary_groups_by_signature() -> None:
     assert len(rows) == 1
     assert rows[0]["signature"] == "sigx"
     assert rows[0]["classification"] == "trade"
+
+
+def test_excel_safe_handles_nested_decimal() -> None:
+    value = {"nested": [Decimal("1.25")]}
+    safe = xlsx._excel_safe(value)
+    assert isinstance(safe, str)
+    assert "1.25" in safe
+
+
+def test_export_xlsx_normalized_events_debug_nested_decimal_and_missing_price_aggregation(tmp_path, caplog) -> None:
+    class MissingPriceProvider:
+        def price_aud(self, mint: str, ts: datetime, *, context: dict | None = None):
+            return None
+
+    ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    event = NormalizedEvent(
+        id="sig2#0",
+        ts=ts,
+        kind="sell",
+        base_token=TokenAmount(mint="MISSING1", symbol="TOK", decimals=6, amount_raw=1_000_000, amount=Decimal("1")),
+        wallet="W1",
+        raw={"signature": "sig2"},
+    )
+    xlsx_path = tmp_path / "report_nested.xlsx"
+    with caplog.at_level("WARNING"):
+        xlsx.export_xlsx(
+            xlsx_path,
+            overview={"Financial year": "2024-2025"},
+            events=[event],
+            lots=[],
+            disposals=[],
+            summary_by_token=[],
+            wallet_summary=[],
+            lot_moves=[],
+            warnings=[],
+            missing_lots=[],
+            price_provider=MissingPriceProvider(),
+            normalized_events_debug=[{"payload": {"amount": Decimal("2.5")}}],
+        )
+    assert xlsx_path.exists()
+    missing_logs = [r.message for r in caplog.records if "Missing prices in XLSX export" in r.message]
+    assert len(missing_logs) == 1
+    per_event_logs = [r.message for r in caplog.records if "Missing price for mint=" in r.message]
+    assert per_event_logs == []

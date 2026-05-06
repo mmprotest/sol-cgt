@@ -14,6 +14,8 @@ from ..pricing import AudPriceProvider
 from ..types import AcquisitionLot, DisposalRecord, LotMoveRecord, MissingLotIssue, NormalizedEvent, WarningRecord
 from .schema import SUMMARY_BY_TOKEN_COLUMNS, WALLET_SUMMARY_COLUMNS
 
+EXCEL_CELL_CHAR_LIMIT = 32767
+
 
 def _apply_header_style(sheet) -> None:
     bold = Font(bold=True)
@@ -43,8 +45,11 @@ def _format_numbers(sheet, columns: Iterable[str], fmt: str) -> None:
                 cell.number_format = fmt
 
 
-def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPriceProvider) -> list[dict[str, str]]:
+def _transaction_rows(
+    events: Sequence[NormalizedEvent], price_provider: AudPriceProvider
+) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
     rows: list[dict[str, str]] = []
+    missing_price_rows: list[dict[str, object]] = []
     logger = logging.getLogger(__name__)
     for event in sorted(events, key=lambda ev: (ev.ts, ev.raw.get("signature") or ev.id, ev.id)):
         mint = None
@@ -64,7 +69,9 @@ def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPric
             else:
                 price = price_provider.price_aud(token.mint, event.ts, context=event.raw)
                 if price is None:
-                    logger.warning("Missing price for mint=%s at %s", token.mint, event.ts.isoformat())
+                    missing_price_rows.append(
+                        {"mint": token.mint, "ts": event.ts.isoformat(), "signature": event.raw.get("signature") or ""}
+                    )
                     value_aud = Decimal("0")
                 else:
                     value_aud = utils.quantize_aud(price * token.amount)
@@ -81,7 +88,9 @@ def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPric
             else:
                 price = price_provider.price_aud(token.mint, event.ts, context=event.raw)
                 if price is None:
-                    logger.warning("Missing price for mint=%s at %s", token.mint, event.ts.isoformat())
+                    missing_price_rows.append(
+                        {"mint": token.mint, "ts": event.ts.isoformat(), "signature": event.raw.get("signature") or ""}
+                    )
                     value_aud = Decimal("0")
                 else:
                     value_aud = utils.quantize_aud(price * token.amount)
@@ -108,7 +117,12 @@ def _transaction_rows(events: Sequence[NormalizedEvent], price_provider: AudPric
                 "valuation_confidence": event.raw.get("valuation_confidence") or "",
             }
         )
-    return rows
+    if missing_price_rows:
+        unique_mints = len({row["mint"] for row in missing_price_rows})
+        logger.warning(
+            "Missing prices in XLSX export count=%s unique_mints=%s", len(missing_price_rows), unique_mints
+        )
+    return rows, missing_price_rows
 
 
 def _lot_rows(lots: Sequence[AcquisitionLot]) -> list[dict[str, str]]:
@@ -205,7 +219,14 @@ def _excel_safe(value: object) -> object:
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, (dict, list, tuple, set)):
-        return utils.json_dumps(value)
+        value = utils.json_dumps(value)
+    elif isinstance(value, bytes):
+        value = value.hex()
+    if not isinstance(value, (str, int, float, bool)):
+        value = str(value)
+    if isinstance(value, str) and len(value) > EXCEL_CELL_CHAR_LIMIT:
+        suffix = "...[truncated]"
+        value = value[: EXCEL_CELL_CHAR_LIMIT - len(suffix)] + suffix
     return value
 
 
@@ -245,7 +266,7 @@ def export_xlsx(
     _auto_width(overview_sheet)
 
     tx_sheet = workbook.create_sheet("Transactions")
-    tx_rows = _transaction_rows(events, price_provider)
+    tx_rows, missing_price_rows = _transaction_rows(events, price_provider)
     if tx_rows:
         tx_sheet.append(list(tx_rows[0].keys()))
         for row in tx_rows:
@@ -371,7 +392,12 @@ def export_xlsx(
     _write_rows("manual_review", manual_review)
     _write_rows("excluded_events", excluded_events)
     _write_rows("dust_ignored", dust_ignored)
-    _write_rows("valuation_warnings", valuation_warnings)
+    merged_valuation_warnings = list(valuation_warnings)
+    if missing_price_rows:
+        merged_valuation_warnings.extend(
+            {"warning_type": "missing_price", "reason": "price_unavailable", **row} for row in missing_price_rows
+        )
+    _write_rows("valuation_warnings", merged_valuation_warnings)
     _write_rows("missing_lot_warnings", missing_lot_warnings)
     _write_rows("taxable_acquisitions", taxable_acquisitions)
     _write_rows("taxable_disposals", taxable_disposals)

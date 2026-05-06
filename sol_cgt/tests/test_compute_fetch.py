@@ -5,7 +5,24 @@ from sol_cgt.config import APIKeys, AppSettings
 def test_compute_fetches_missing_cache_with_fy_filters(monkeypatch) -> None:
     settings = AppSettings(wallets=["wallet"], api_keys=APIKeys(helius="key"))
     monkeypatch.setattr(cli, "load_settings", lambda *args, **kwargs: settings)
-    monkeypatch.setattr(cli.fetch_mod, "cache_has_data", lambda _: False)
+    monkeypatch.setattr(
+        cli.fetch_mod,
+        "inspect_raw_cache_coverage",
+        lambda wallet, start, end: cli.fetch_mod.CacheCoverage(
+            wallet=wallet,
+            cache_path=f"{wallet}.jsonl",
+            has_cache=False,
+            raw_tx_count=0,
+            cache_min_timestamp=None,
+            cache_max_timestamp=None,
+            requested_start=start,
+            requested_end=end,
+            covers_start=False,
+            covers_end=False,
+            coverage_complete=False,
+            missing_ranges=[{"start": start, "end": end, "reason": "empty_cache"}],
+        ),
+    )
 
     captured: dict[str, object] = {}
 
@@ -62,8 +79,24 @@ def test_compute_fetches_missing_cache_with_fy_filters(monkeypatch) -> None:
 def test_no_fetch_fails_on_incomplete_cache_coverage(monkeypatch) -> None:
     settings = AppSettings(wallets=["wallet"], api_keys=APIKeys(helius="key"))
     monkeypatch.setattr(cli, "load_settings", lambda *args, **kwargs: settings)
-    monkeypatch.setattr(cli.fetch_mod, "cache_time_bounds", lambda _: (1719792000, 1722470399))
-    monkeypatch.setattr(cli.fetch_mod, "cache_has_data", lambda _: True)
+    monkeypatch.setattr(
+        cli.fetch_mod,
+        "inspect_raw_cache_coverage",
+        lambda wallet, start, end: cli.fetch_mod.CacheCoverage(
+            wallet=wallet,
+            cache_path=f"{wallet}.jsonl",
+            has_cache=True,
+            raw_tx_count=1,
+            cache_min_timestamp=1719792000,
+            cache_max_timestamp=1722470399,
+            requested_start=start,
+            requested_end=end,
+            covers_start=False,
+            covers_end=False,
+            coverage_complete=False,
+            missing_ranges=[{"start": start, "end": 1719792000, "reason": "missing_start"}],
+        ),
+    )
     monkeypatch.setattr(cli.fetch_mod, "load_cached", lambda _: [])
     try:
         cli.compute(wallet=["wallet"], config=None, outdir=None, method=None, fy="2023-2024", fy_start=None, fy_end=None, fmt="csv", xlsx_path=None, sol_price_csv=None, dry_run=True, fetch=False)

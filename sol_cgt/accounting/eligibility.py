@@ -24,7 +24,6 @@ def apply_accounting_policy(
     include_dust: bool,
 ) -> EligibilityResult:
     events_list = list(events)
-    _classify_transfer_groups(events_list)
     taxable: list[NormalizedEvent] = []
     manual_review: list[dict[str, object]] = []
     dust_ignored: list[dict[str, object]] = []
@@ -45,47 +44,6 @@ def apply_accounting_policy(
 
     return EligibilityResult(taxable_events=taxable, manual_review=manual_review, dust_ignored=dust_ignored)
 
-
-def _classify_transfer_groups(events: list[NormalizedEvent]) -> None:
-    grouped: dict[tuple[str, str], list[NormalizedEvent]] = {}
-    for ev in events:
-        sig = ev.raw.get("signature")
-        if sig:
-            grouped.setdefault((sig, ev.wallet), []).append(ev)
-    anchor_mints = {normalize_mint(m) for m in TRANSFER_ANCHOR_MINTS}
-    for (_, _), group in grouped.items():
-        transfer_rows = [e for e in group if e.kind in {"transfer_in", "transfer_out"} and not e.raw.get("swap_component")]
-        if not transfer_rows:
-            continue
-        deltas: dict[str, Decimal] = {}
-        mint_events: dict[str, list[NormalizedEvent]] = {}
-        for ev in transfer_rows:
-            tok = ev.base_token if ev.kind == "transfer_out" else ev.quote_token
-            if tok is None:
-                continue
-            mint = normalize_mint(tok.mint)
-            if mint == normalize_mint(SOL_MINT) and tok.amount == 0:
-                continue
-            delta = tok.amount if ev.kind == "transfer_in" else -tok.amount
-            deltas[mint] = deltas.get(mint, Decimal("0")) + delta
-            mint_events.setdefault(mint, []).append(ev)
-        non_zero = {m: q for m, q in deltas.items() if q != 0}
-        non_anchor = {m: q for m, q in non_zero.items() if m not in anchor_mints}
-        anchor = {m: q for m, q in non_zero.items() if m in anchor_mints}
-        if not non_anchor:
-            continue
-        # Clean token-to-token: one non-anchor out and one non-anchor in with no anchor leg.
-        neg = [(m, q) for m, q in non_anchor.items() if q < 0]
-        pos = [(m, q) for m, q in non_anchor.items() if q > 0]
-        if len(anchor) == 0 and len(neg) == 1 and len(pos) == 1 and neg[0][0] != pos[0][0]:
-            for ev in transfer_rows:
-                ev.raw["swap_component"] = True
-                ev.raw["accounting_action"] = "component_of_token_to_token_swap"
-            continue
-        # Ambiguous unanchored/multi-leg transfer groups should not be forced taxable.
-        if len(anchor) == 0:
-            for ev in transfer_rows:
-                ev.raw.setdefault("manual_review_reason", "token_transfer_group_ambiguous")
 
 
 def _classify_event(event: NormalizedEvent) -> None:

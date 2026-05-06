@@ -51,7 +51,7 @@ def _classify_event(event: NormalizedEvent) -> None:
         event.raw.get("source") == "helius_token_transfer"
         and event.raw.get("valuation_method") == "inferred_from_same_signature_anchor"
         and event.raw.get("valuation_confidence") == "medium"
-        and event.kind in {"transfer_in", "transfer_out"}
+        and event.kind == "transfer_out"
     ):
         event.raw["classification"] = "inferred_transfer_manual_review"
         event.raw["accounting_action"] = "manual_review"

@@ -84,3 +84,39 @@ def test_missing_lot_does_not_stop_later_events() -> None:
     result = engine.process([sell_missing, buy], strict_lots=False, missing_lot_issues=issues)
     assert len(issues) == 1
     assert any(lot.source_event == "tx2#0" for lot in result.acquisitions)
+
+
+def test_missing_lot_does_not_block_later_valid_disposal() -> None:
+    ts = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    sell_missing = NormalizedEvent(
+        id="tx1#0",
+        ts=ts,
+        kind="sell",
+        base_token=TokenAmount(mint="TOKEN", amount_raw=5, decimals=0, symbol="TKN"),
+        fee_sol=Decimal("0"),
+        wallet="W1",
+        raw={"signature": "sig1", "proceeds_aud": "5"},
+    )
+    buy_sol = NormalizedEvent(
+        id="tx2#0",
+        ts=ts.replace(hour=1),
+        kind="buy",
+        quote_token=TokenAmount(mint="SOL", amount_raw=10, decimals=0, symbol="SOL"),
+        fee_sol=Decimal("0"),
+        wallet="W1",
+        raw={"signature": "sig2", "cost_aud": "10"},
+    )
+    sell_sol = NormalizedEvent(
+        id="tx3#0",
+        ts=ts.replace(hour=2),
+        kind="sell",
+        base_token=TokenAmount(mint="SOL", amount_raw=4, decimals=0, symbol="SOL"),
+        fee_sol=Decimal("0"),
+        wallet="W1",
+        raw={"signature": "sig3", "proceeds_aud": "8"},
+    )
+    engine = AccountingEngine(price_provider=SimplePriceProvider({}))
+    issues: list[MissingLotIssue] = []
+    result = engine.process([sell_missing, buy_sol, sell_sol], strict_lots=False, missing_lot_issues=issues)
+    assert len(issues) == 1
+    assert any(d.event_id == "tx3#0" for d in result.disposals)

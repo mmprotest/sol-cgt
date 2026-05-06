@@ -122,10 +122,11 @@ def build_transaction_summary(events: Iterable[NormalizedEvent]) -> list[dict[st
     rows: list[dict[str, object]] = []
     for signature, sig_events in sorted(by_sig.items()):
         kinds = {e.kind for e in sig_events}
-        if any(e.raw.get("accounting_action") == "manual_review" for e in sig_events):
-            classification = "manual_review"
-        elif "swap" in kinds or any("swap" in str(e.raw.get("classification", "")) for e in sig_events):
+        has_trade = "swap" in kinds or any("swap" in str(e.raw.get("classification", "")) for e in sig_events)
+        if has_trade:
             classification = "trade"
+        elif any(e.raw.get("accounting_action") == "manual_review" for e in sig_events):
+            classification = "mixed_or_ambiguous"
         elif kinds == {"transfer_in"}:
             classification = "deposit"
         elif kinds == {"transfer_out"}:
@@ -146,6 +147,7 @@ def build_transaction_summary(events: Iterable[NormalizedEvent]) -> list[dict[st
                 "timestamp": min(e.ts for e in sig_events).isoformat(),
                 "event_count": len(sig_events),
                 "classification": classification,
+                "review_status": "needs_review" if any(e.raw.get("accounting_action") == "manual_review" for e in sig_events) else "ok",
                 "wallets": ",".join(sorted({e.wallet for e in sig_events})),
             }
         )

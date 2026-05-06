@@ -186,10 +186,39 @@ def _run_accounting(
     except accounting_methods.LotSelectionError as exc:
         if exc.issue and exc.issue not in missing_lot_issues:
             missing_lot_issues.append(exc.issue)
-        partial = exc.partial_result
-        if not isinstance(partial, AccountingResult):
-            partial = AccountingResult(acquisitions=[], disposals=[], lot_moves=[], warnings=[])
+        if strict_lots:
+            raise
+        partial = exc.partial_result if isinstance(exc.partial_result, AccountingResult) else AccountingResult(acquisitions=[], disposals=[], lot_moves=[], warnings=[])
         return partial, True
+
+
+def _ensure_cache_coverage(wallets: list[str], *, gte_time: Optional[int], lte_time: Optional[int], fetch: bool, settings) -> bool:
+    complete = True
+    for addr in wallets:
+        cache_min, cache_max = fetch_mod.cache_time_bounds(addr)
+        has_data = cache_min is not None and cache_max is not None
+        covers_start = gte_time is None or (has_data and cache_min <= gte_time)
+        covers_end = lte_time is None or (has_data and cache_max >= lte_time)
+        coverage = "complete" if (has_data and covers_start and covers_end) else "incomplete"
+        logger.info("wallet=%s cache_min=%s cache_max=%s requested_start=%s requested_end=%s coverage=%s", addr, cache_min, cache_max, gte_time, lte_time, coverage)
+        if coverage == "complete":
+            continue
+        complete = False
+        if not fetch:
+            continue
+        asyncio.run(
+            fetch_mod.fetch_wallet(
+                addr,
+                api_key=settings.api_keys.helius,
+                base_url=settings.helius_enhanced_base_url,
+                limit=settings.helius_tx_limit,
+                max_pages=settings.helius_max_pages,
+                gte_time=gte_time,
+                lte_time=lte_time,
+                append=True,
+            )
+        )
+    return complete
 
 
 def _collect_wallets(wallet_values: Optional[List[str]]) -> List[str]:
@@ -427,6 +456,9 @@ def compute(
     lte_time = int(fy_period.end.timestamp()) if fy_period else None
     rpc_url = _resolve_rpc_url(settings)
     raw_by_wallet: dict[str, list[dict]] = {}
+    cache_coverage_complete = _ensure_cache_coverage(wallets, gte_time=gte_time, lte_time=lte_time, fetch=fetch, settings=settings)
+    if not cache_coverage_complete and not fetch:
+        raise typer.BadParameter("Cache coverage is incomplete for requested period and --no-fetch was specified.")
     for addr in wallets:
         if not fetch_mod.cache_has_data(addr):
             if fetch:
@@ -576,8 +608,14 @@ def compute(
                     fx_rate=price_provider.fx_rate,
                 ),
             )
+            eligibility = apply_accounting_policy(
+                scoped_events,
+                sol_dust_threshold=sol_dust_threshold_dec,
+                aud_dust_threshold=aud_dust_threshold_dec,
+                include_dust=include_dust,
+            )
             result, stopped_for_missing = _run_accounting(
-                events=scoped_events,
+                events=eligibility.taxable_events,
                 wallets=wallets,
                 settings=settings,
                 price_provider=price_provider,
@@ -660,6 +698,7 @@ def compute(
         output_dir = output_dir / fy_label
     overview_row = {
         "accounting_complete": not bool(excluded_events or missing_lot_issues),
+        "cache_coverage_complete": cache_coverage_complete,
         "taxable_events_processed": len(eligibility.taxable_events),
         "manual_review_events": len(eligibility.manual_review),
         "missing_lot_events": len(missing_lot_issues),
@@ -702,6 +741,8 @@ def compute(
                 "Fees total (AUD)": str(fees_total),
                 "Warnings": str(len(warnings)),
                 "Missing lots": str(len(missing_lot_issues)),
+                "Accounting complete": str(not bool(excluded_events or missing_lot_issues)),
+                "Cache coverage complete": str(cache_coverage_complete),
             },
             events=[ev for ev in scoped_events if not fy_period or fy_period.start <= ev.ts <= fy_period.end],
             lots=acquisitions,
@@ -712,6 +753,15 @@ def compute(
             warnings=warnings,
             missing_lots=missing_lot_issues,
             price_provider=price_provider,
+            transaction_summary=transaction_summary,
+            manual_review=eligibility.manual_review,
+            excluded_events=excluded_events,
+            valuation_warnings=valuation_warning_rows,
+            missing_lot_warnings=[w.model_dump() for w in missing_lot_warnings],
+            taxable_acquisitions=[lot.model_dump() for lot in acquisitions],
+            taxable_disposals=[d.model_dump() for d in disposals],
+            normalized_events_debug=[ev.model_dump() for ev in scoped_events],
+            dust_ignored=eligibility.dust_ignored,
         )
     console_report.render_summary(disposals, acquisitions, warnings)
     typer.echo("Manual review items were excluded from taxable CGT totals.")
